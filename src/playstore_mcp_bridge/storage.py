@@ -11,6 +11,7 @@ from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
 
 from cryptography.fernet import Fernet
+from pydantic_core import to_json
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -54,7 +55,7 @@ class Store:
                 db.close()
 
     def encrypt(self, value: Any) -> bytes:
-        return self.cipher.encrypt(json.dumps(value, ensure_ascii=False).encode())
+        return self.cipher.encrypt(to_json(value))
 
     def decrypt(self, value: bytes) -> Any:
         return json.loads(self.cipher.decrypt(value))

@@ -7,6 +7,7 @@ import asyncio
 import hashlib
 import json
 from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -427,7 +428,13 @@ async def test_jobs_idempotency_persistence_encryption_and_ownership(runtime, mo
     jobs = Jobs(runtime.assets.store, runtime)
     args = {"package_name": "com.example.app"}
     with patch.object(
-        runtime, "call", return_value={"success": True, "purchase_token": "sensitive-token"}
+        runtime,
+        "call",
+        return_value={
+            "success": True,
+            "purchase_token": "sensitive-token",
+            "date": datetime(2026, 10, 14, tzinfo=UTC),
+        },
     ) as call:
         await jobs.start()
         first = await asyncio.to_thread(jobs.submit, "get_releases", args, "key", "owner")
@@ -437,6 +444,7 @@ async def test_jobs_idempotency_persistence_encryption_and_ownership(runtime, mo
             jobs.submit("get_releases", {"package_name": "com.other.app"}, "key", "owner")
         result = await wait_job(jobs, first["id"], "owner")
         assert result["status"] == "completed"
+        assert result["result"]["date"] == "2026-10-14T00:00:00Z"
         assert call.call_count == 1
         with pytest.raises(ValueError):
             jobs.get(first["id"], "other")
