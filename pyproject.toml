@@ -1,0 +1,219 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "playstore-mcp-bridge"
+version = "1.0.0"
+description = "Authenticated Google Play MCP bridge for ChatGPT, Gemini, and Railway"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+authors = [
+    { name = "Play Store MCP Contributors" }
+]
+keywords = [
+    "mcp",
+    "model-context-protocol",
+    "google-play",
+    "android",
+    "play-store",
+    "developer-api",
+    "app-deployment"
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Build Tools",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = [
+    # [code-mode]: the Monty sandbox that powers the `execute` meta-tool.
+    # Code-mode is enabled by default (CODE_MODE=0 to opt out), so its
+    # sandbox must be a base dependency, not an optional extra -- otherwise
+    # every default install (uvx/pip/Docker) ships a server whose only
+    # actionable tool, `execute`, fails out of the box.
+    "fastmcp[code-mode]>=4.0.0,<5.0",
+    "google-api-python-client>=2.180.0",
+    "google-auth>=2.40.0",
+    "pydantic>=2.10.0",
+    "structlog>=25.0.0",
+    # pyjwt is a transitive dependency (via mcp). Declared directly with a
+    # secure floor so the CVE-2026-32597 fix ships in published metadata,
+    # not just in this repo's lockfile/uv resolution.
+    "pyjwt[crypto]>=2.12.0",
+    "py-key-value-aio[redis]>=0.4.5,<0.5",
+    "httpx2>=2.12.0,<3",
+    "uvicorn>=0.52.0,<1",
+    "starlette>=1.6.0,<2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.25.0",
+    "pytest-cov>=6.0.0",
+    "ruff>=0.9.0",
+    "mypy>=1.14.0",
+    "fakeredis>=2.30.0,<3",
+]
+
+[project.scripts]
+play-store-mcp = "play_store_mcp:main"
+playstore-mcp-bridge = "playstore_mcp_bridge.app:main"
+
+[project.urls]
+Homepage = "https://github.com/quyendang/playstore-mcp"
+Documentation = "https://github.com/quyendang/playstore-mcp#readme"
+Repository = "https://github.com/quyendang/playstore-mcp"
+Issues = "https://github.com/quyendang/playstore-mcp/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/play_store_mcp", "src/playstore_mcp_bridge"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/src",
+    "/tests",
+    "/README.md",
+    "/UPSTREAM_README.md",
+    "/LICENSE",
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # Pyflakes
+    "I",      # isort
+    "B",      # flake8-bugbear
+    "C4",     # flake8-comprehensions
+    "UP",     # pyupgrade
+    "ARG",    # flake8-unused-arguments
+    "SIM",    # flake8-simplify
+    "TCH",    # flake8-type-checking
+    "PTH",    # flake8-use-pathlib
+    "RUF",    # Ruff-specific rules
+    "S",      # flake8-bandit (security)
+    "BLE",    # flake8-blind-except
+    "TRY",    # tryceratops
+    "PERF",   # perflint
+    "PIE",    # flake8-pie
+    "PLC",    # pylint convention
+    "SLF",    # flake8-self
+    "C90",    # mccabe complexity
+]
+ignore = [
+    "E501",   # line too long (handled by formatter)
+    "B008",   # do not perform function calls in argument defaults
+    "B904",   # raise without from inside except
+    "S101",   # assert in tests (expected for pytest)
+    "TRY003", # long exception messages
+    "TRY300", # return in try block (intentional pattern for API calls)
+    "TRY301", # abstract raise to inner function
+    "TC002",  # move third-party imports into type-checking block
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = [
+    "SLF001",  # private member access (needed for testing internals)
+    "S105",    # hardcoded passwords in test assertions
+    "S106",    # hardcoded passwords in test fixtures
+    "PLC0415", # imports inside test functions (intentional for test isolation)
+    "BLE001",  # blind except in test scripts
+    "C901",    # complexity in test scripts
+    "PLR0912", # too many branches in test scripts
+    "PLR0915", # too many statements in test scripts
+    "S607",    # partial executable path (test scripts)
+]
+"src/play_store_mcp/server.py" = [
+    "SLF001",  # accessing _get_service in lifespan is intentional
+    "C901",    # complexity in update_credentials is acceptable
+]
+"src/playstore_mcp_bridge/app.py" = ["SLF001", "C901", "S104"] # Native upstream adapters and cloud binding
+"src/playstore_mcp_bridge/runtime.py" = ["SLF001", "C901"] # Confined adapter over upstream client internals
+"src/playstore_mcp_bridge/downloads.py" = ["SLF001"] # Share the upstream thread-safe transport
+"src/playstore_mcp_bridge/jobs.py" = ["BLE001"] # Persist explicit uncertain outcomes for all execution failures
+"src/playstore_mcp_bridge/portal.py" = ["BLE001"] # Authentication boundary always fails closed
+"src/play_store_mcp/client.py" = [
+    "C901",    # complexity in _get_service is acceptable for credential handling
+    "BLE001",  # write methods must return a Result rather than crash the MCP
+               # tool call on any failure; _fail_result always logs and
+               # constructs a proper error Result, never silently swallows
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["play_store_mcp"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+
+[tool.mypy]
+python_version = "3.11"
+plugins = ["pydantic.mypy"]
+strict = false
+warn_return_any = true
+warn_unused_ignores = false
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+no_implicit_optional = true
+warn_redundant_casts = true
+show_error_codes = true
+files = ["src/play_store_mcp"]
+
+[tool.pydantic-mypy]
+init_forbid_extra = true
+init_typed = true
+warn_required_dynamic_aliases = true
+
+[[tool.mypy.overrides]]
+module = [
+    "googleapiclient.*",
+    "google.oauth2.*",
+    "google.auth.*",
+    "mcp.*",
+]
+ignore_missing_imports = true
+disable_error_code = ["no-untyped-call"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+addopts = "-v --tb=short"
+filterwarnings = [
+    "ignore:cannot collect test class:pytest.PytestCollectionWarning",
+    "ignore::DeprecationWarning",
+]
+
+[tool.coverage.run]
+source = ["src/play_store_mcp"]
+branch = true
+omit = ["*/__main__.py"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.:",
+]
+
+[tool.bandit]
+skips = ["B101"]
+exclude_dirs = ["tests"]

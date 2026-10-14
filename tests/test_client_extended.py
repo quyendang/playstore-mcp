@@ -1,0 +1,1640 @@
+"""Extended tests for PlayStoreClient — covers error paths, retry logic, and uncovered methods."""
+
+from __future__ import annotations
+
+from typing import Any
+from unittest.mock import MagicMock, patch
+
+import pytest
+from googleapiclient.errors import HttpError
+
+from play_store_mcp.client import (
+    MAX_RETRIES,
+    PlayStoreClient,
+    PlayStoreClientError,
+    retry_with_backoff,
+)
+
+# =========================================================================
+# Helpers
+# =========================================================================
+
+
+def _make_http_error(status: int, reason: str = "error") -> HttpError:
+    """Create a mock HttpError with given status."""
+    resp = MagicMock()
+    resp.status = status
+    return HttpError(resp=resp, content=reason.encode())
+
+
+# =========================================================================
+# retry_with_backoff tests
+# =========================================================================
+
+
+class TestRetryWithBackoff:
+    """Test the retry decorator."""
+
+    @patch("play_store_mcp.client.time.sleep")
+    def test_retries_on_500(self, mock_sleep: MagicMock) -> None:
+        """Test that 500 errors trigger retries."""
+        call_count = 0
+
+        @retry_with_backoff
+        def flaky() -> str:
+            nonlocal call_count
+            call_count += 1
+            if call_count < 3:
+                raise _make_http_error(500)
+            return "ok"
+
+        result = flaky()
+        assert result == "ok"
+        assert call_count == 3
+        assert mock_sleep.call_count == 2
+
+    @patch("play_store_mcp.client.time.sleep")
+    def test_retries_on_429(self, _mock_sleep: MagicMock) -> None:
+        """Test that 429 rate limit errors trigger retries."""
+        call_count = 0
+
+        @retry_with_backoff
+        def rate_limited() -> str:
+            nonlocal call_count
+            call_count += 1
+            if call_count < 2:
+                raise _make_http_error(429)
+            return "ok"
+
+        result = rate_limited()
+        assert result == "ok"
+        assert call_count == 2
+
+    @patch("play_store_mcp.client.time.sleep")
+    def test_retries_on_503(self, _mock_sleep: MagicMock) -> None:
+        """Test that 503 errors trigger retries."""
+        call_count = 0
+
+        @retry_with_backoff
+        def unavailable() -> str:
+            nonlocal call_count
+            call_count += 1
+            if call_count < 2:
+                raise _make_http_error(503)
+            return "ok"
+
+        result = unavailable()
+        assert result == "ok"
+
+    def test_no_retry_on_400(self) -> None:
+        """Test that 400 errors are not retried."""
+
+        @retry_with_backoff
+        def bad_request() -> str:
+            raise _make_http_error(400)
+
+        with pytest.raises(HttpError):
+            bad_request()
+
+    def test_no_retry_on_403(self) -> None:
+        """Test that 403 errors are not retried."""
+
+        @retry_with_backoff
+        def forbidden() -> str:
+            raise _make_http_error(403)
+
+        with pytest.raises(HttpError):
+            forbidden()
+
+    def test_no_retry_on_non_http_error(self) -> None:
+        """Test that non-HttpError exceptions are not retried."""
+
+        @retry_with_backoff
+        def broken() -> str:
+            raise ValueError("not an http error")
+
+        with pytest.raises(ValueError, match="not an http error"):
+            broken()
+
+    @patch("play_store_mcp.client.time.sleep")
+    def test_max_retries_exceeded(self, mock_sleep: MagicMock) -> None:
+        """Test that exceeding max retries raises the error."""
+
+        @retry_with_backoff
+        def always_fails() -> str:
+            raise _make_http_error(500)
+
+        with pytest.raises(HttpError):
+            always_fails()
+
+        # Should have slept MAX_RETRIES - 1 times then raised on the last attempt
+        assert mock_sleep.call_count == MAX_RETRIES - 1
+
+    def test_success_on_first_try(self) -> None:
+        """Test that successful calls work without retries."""
+
+        @retry_with_backoff
+        def works() -> str:
+            return "immediate"
+
+        assert works() == "immediate"
+
+
+# =========================================================================
+# _get_service error path
+# =========================================================================
+
+
+class TestGetServiceErrors:
+    """Test _get_service error handling."""
+
+    def test_service_init_failure(self, tmp_path: Any) -> None:
+        """Test that service initialization failure wraps the error."""
+        creds_file = tmp_path / "bad-creds.json"
+        creds_file.write_text('{"type": "invalid"}')
+
+        client = PlayStoreClient(credentials_path=str(creds_file))
+
+        with (
+            patch(
+                "play_store_mcp.client.service_account.Credentials.from_service_account_info",
+                side_effect=ValueError("bad creds"),
+            ),
+            pytest.raises(PlayStoreClientError, match="Failed to initialize API client"),
+        ):
+            client._get_service()
+
+    def test_cached_service_returned(
+        self,
+        client: PlayStoreClient,
+        _mock_service: MagicMock,
+    ) -> None:
+        """Test that cached service is returned on subsequent calls."""
+        svc1 = client._get_service()
+        svc2 = client._get_service()
+        assert svc1 is svc2
+
+
+# =========================================================================
+# deploy_app error paths
+# =========================================================================
+
+
+class TestDeployAppErrors:
+    """Test deploy_app error handling."""
+
+    def test_deploy_http_error(
+        self,
+        client: PlayStoreClient,
+        _mock_service: MagicMock,
+        tmp_path: Any,
+    ) -> None:
+        """Test deployment failure from HttpError."""
+        apk_file = tmp_path / "app.apk"
+        apk_file.write_bytes(b"content")
+
+        mock_edits = _mock_service.edits.return_value
+        mock_edits.insert.return_value.execute.return_value = {"id": "edit-123"}
+        mock_edits.apks.return_value.upload.return_value.execute.side_effect = _make_http_error(
+            403, "forbidden"
+        )
+        mock_edits.delete.return_value.execute.return_value = None
+
+        result = client.deploy_app(
+            package_name="com.example.app",
+            track="internal",
+            file_path=str(apk_file),
+        )
+
+        assert result.success is False
+        assert "Deployment failed" in result.message
+
+    def test_deploy_generic_exception(
+        self,
+        client: PlayStoreClient,
+        _mock_service: MagicMock,
+        tmp_path: Any,
+    ) -> None:
+        """Test deployment failure from generic Exception."""
+        apk_file = tmp_path / "app.apk"
+        apk_file.write_bytes(b"content")
+
+        mock_edits = _mock_service.edits.return_value
+        mock_edits.insert.return_value.execute.return_value = {"id": "edit-123"}
+        mock_edits.apks.return_value.upload.return_value.execute.side_effect = RuntimeError(
+            "disk full"
+        )
+        mock_edits.delete.return_value.execute.return_value = None
+
+        result = client.deploy_app(
+            package_name="com.example.app",
+            track="internal",
+            file_path=str(apk_file),
+        )
+
+        assert result.success is False
+        assert "disk full" in result.message
+
+
+# =========================================================================
+# promote_release error paths
+# =========================================================================
+
+
+class TestPromoteReleaseErrors:
+    """Test promote_release error handling."""
+
+    def test_promote_http_error(
+        self,
+        client: PlayStoreClient,
+        _mock_service: MagicMock,
+    ) -> None:
+        """Test promotion failure from HttpError."""
+        mock_edits = _mock_service.edits.return_value
+        mock_edits.insert.return_value.execute.return_value = {"id": "edit-123"}
+        mock_edits.tracks.return_value.get.return_value.execute.side_effect = _make_http_error(
+            404, "not found"
+        )
+        mock_edits.delete.return_value.execute.return_value = None
+
+        result = client.promote_release(
+            package_name="com.example.app",
+            from_track="beta",
+            to_track="production",
+            version_code=100,
+        )
+
+        assert result.success is False
+        assert "Promotion failed" in result.message
+
+    def test_promote_generic_exception(
+        self,
+        client: PlayStoreClient,
+        _mock_service: MagicMock,
+    ) -> None:
+        """Test promotion failure from generic Exception."""
+        mock_edits = _mock_service.edits.return_value
+        mock_edits.insert.return_value.execute.return_value = {"id": "edit-123"}
+        mock_edits.tracks.return_value.get.return_value.execute.side_effect = RuntimeError("boom")
+        mock_edits.delete.return_value.execute.return_value = None
+
+        result = client.promote_release(
+            package_name="com.example.app",
+            from_track="beta",
+            to_track="production",
+            version_code=100,
+        )
+
+        assert result.success is False
+        assert "boom" in result.message
+
+    def test_promote_staged_rollout(
+        self,
+        client: PlayStoreClient,
+        _mock_service: MagicMock,
+    ) -> None:
+        """Test promotion with staged rollout percentage."""
+        mock_edits = _mock_service.edits.return_value
+        mock_edits.insert.return_value.execute.return_value = {"id": "edit-123"}
+        mock_edits.tracks.return_value.get.return_value.execute.return_value = {
+            "track": "beta",
+            "releases": [{"versionCodes": ["100"], "releaseNotes": []}],
+        }
+        mock_edits.tracks.return_value.update.return_value.execute.return_value = {}
+        mock_edits.commit.return_value.execute.return_value = {}
+
+        result = client.promote_release(
+            package_name="com.example.app",
+            from_track="beta",
+            to_track="production",
+            version_code=100,
+            rollout_percentage=25.0,
+        )
+
+        assert result.success is True
+        update_call = mock_edits.tracks.return_value.update.call_args
+        body = update_call.kwargs["body"]
+        assert body["releases"][0]["status"] == "inProgress"
+        assert body["releases"][0]["userFraction"] == 0.25
+
+
+# =========================================================================
+# halt_release tests
+# =========================================================================
+
+
+class TestHaltRelease:
+    """Test halt_release method."""
+
+    def test_halt_success(
+        self,
+        client: PlayStoreClient,
+        _mock_service: MagicMock,
+    ) -> None:
+        """Test successful halt."""
+        mock_edits = _mock_service.edits.return_value
+        mock_edits.insert.return_value.execute.return_value = {"id": "edit-123"}
+        mock_edits.tracks.return_value.get.return_value.execute.return_value = {
+            "track": "production",
+            "releases": [{"versionCodes": ["100"], "status": "inProgress"}],
+        }
+        mock_edits.tracks.return_value.update.return_value.execute.return_value = {}
+        mock_edits.commit.return_value.execute.return_value = {}
+
+        result = client.halt_release("com.example.app", "production", 100)
+
+        assert result.success is True
+        assert "halted" in result.message.lower()
+
+    def test_halt_version_not_found(
+        self,
+        client: PlayStoreClient,
+        _mock_service: MagicMock,
+    ) -> None:
+        """Test halt with nonexistent version."""
+        mock_edits = _mock_service.edits.return_value
+        mock_edits.insert.return_value.execute.return_value = {"id": "edit-123"}
+        mock_edits.tracks.return_value.get.return_value.execute.return_value = {
+            "track": "production",
+            "releases": [{"versionCodes": ["99"]}],
+        }
+        mock_edits.delete.return_value.execute.return_value = None
+
+        result = client.halt_release("com.example.app", "production", 100)
+
+        assert result.success is False
+        assert "not found" in result.message
+
+    def test_halt_http_error(
+        self,
+        client: PlayStoreClient,
+        _mock_service: MagicMock,
+    ) -> None:
+        """Test halt failure from HttpError."""
+        mock_edits = _mock_service.edits.return_value
+        mock_edits.insert.return_value.execute.return_value = {"id": "edit-123"}
+        mock_edits.tracks.return_value.get.return_value.execute.side_effect = _make_http_error(500)
+        mock_edits.delete.return_value.execute.return_value = None
+
+        result = client.halt_release("com.example.app", "production", 100)
+
+        assert result.success is False
+        assert "Halt failed" in result.message
+
+    def test_halt_generic_exception(
+        self,
+        client: PlayStoreClient,
+        _mock_service: MagicMock,
+    ) -> None:
+        """Test halt failure from generic Exception."""
+        mock_edits = _mock_service.edits.return_value
+        mock_edits.insert.return_value.execute.return_value = {"id": "edit-123"}
+        mock_edits.tracks.return_value.get.return_value.execute.side_effect = RuntimeError("oops")
+        mock_edits.delete.return_value.execute.return_value = None
+
+        result = client.halt_release("com.example.app", "production", 100)
+
+        assert result.success is False
+        assert "oops" in result.message
+
+
+# =========================================================================
+# update_rollout tests
+# =========================================================================
+
+
+class TestUpdateRollout:
+    """Test update_rollout method."""
+
+    def test_update_rollout_success(
+        self,
+        client: PlayStoreClient,
+        _mock_service: MagicMock,
+    ) -> None:
+        """Test successful rollout update."""
+        mock_edits = _mock_service.edits.return_value
+        mock_edits.insert.return_value.execute.return_value = {"id": "edit-123"}
+        mock_edits.tracks.return_value.get.return_value.execute.return_value = {
+            "track": "production",
+            "releases": [{"versionCodes": ["100"], "status": "inProgress", "userFraction": 0.1}],
+        }
+        mock_edits.tracks.return_value.update.return_value.execute.return_value = {}
+        mock_edits.commit.return_value.execute.return_value = {}
+
+        result = client.update_rollout("com.example.app", "production", 100, 50.0)
+
+        assert result.success is True
+        assert "50.0%" in result.message
+
+    def test_update_rollout_complete(
+        self,
+        client: PlayStoreClient,
+        _mock_service: MagicMock,
+    ) -> None:
+        """Test completing a rollout (100%)."""
+        mock_edits = _mock_service.edits.return_value
+        mock_edits.insert.return_value.execute.return_value = {"id": "edit-123"}
+        mock_edits.tracks.return_value.get.return_value.execute.return_value = {
+            "track": "production",
+            "releases": [{"versionCodes": ["100"], "status": "inProgress", "userFraction": 0.5}],
+        }
+        mock_edits.tracks.return_value.update.return_value.execute.return_value = {}
+        mock_edits.commit.return_value.execute.return_value = {}
+
+        result = client.update_rollout("com.example.app", "production", 100, 100.0)
+
+        assert result.success is True
+
+    def test_update_rollout_version_not_found(
+        self,
+        client: PlayStoreClient,
+        _mock_service: MagicMock,
+    ) -> None:
+        """Test rollout update with nonexistent version."""
+        mock_edits = _mock_service.edits.return_value
+        mock_edits.insert.return_value.execute.return_value = {"id": "edit-123"}
+        mock_edits.tracks.return_value.get.return_value.execute.return_value = {
+            "track": "production",
+            "releases": [{"versionCodes": ["99"]}],
+        }
+        mock_edits.delete.return_value.execute.return_value = None
+
+        result = client.update_rollout("com.example.app", "production", 100, 50.0)
+
+        assert result.success is False
+        assert "not found" in result.message
+
+    def test_update_rollout_http_error(
+        self,
+        client: PlayStoreClient,
+        _mock_service: MagicMock,
+    ) -> None:
+        """Test rollout update failure from HttpError."""
+        mock_edits = _mock_service.edits.return_value
+        mock_edits.insert.return_value.execute.return_value = {"id": "edit-123"}
+        mock_edits.tracks.return_value.get.return_value.execute.side_effect = _make_http_error(500)
+        mock_edits.delete.return_value.execute.return_value = None
+
+        result = client.update_rollout("com.example.app", "production", 100, 50.0)
+
+        assert result.success is False
+
+    def test_update_rollout_generic_exception(
+        self,
+        client: PlayStoreClient,
+        _mock_service: MagicMock,
+    ) -> None:
+        """Test rollout update failure from generic Exception."""
+        mock_edits = _mock_service.edits.return_value
+        mock_edits.insert.return_value.execute.return_value = {"id": "edit-123"}
+        mock_edits.tracks.return_value.get.return_value.execute.side_effect = RuntimeError("fail")
+        mock_edits.delete.return_value.execute.return_value = None
+
+        result = client.update_rollout("com.example.app", "production", 100, 50.0)
+
+        assert result.success is False
+        assert "fail" in result.message
+
+
+# =========================================================================
+# get_app_details tests
+# =========================================================================
+
+
+class TestGetAppDetails:
+    """Test get_app_details method."""
+
+    def test_get_app_details_listing_not_found(
+        self,
+        client: PlayStoreClient,
+        _mock_service: MagicMock,
+    ) -> None:
+        """Test get_app_details when listing is not found for language."""
+        mock_edits = _mock_service.edits.return_value
+        mock_edits.insert.return_value.execute.return_value = {"id": "edit-123"}
+        mock_edits.details.return_value.get.return_value.execute.return_value = {
+            "defaultLanguage": "en-US",
+            "contactEmail": "dev@example.com",
+        }
+        # Listing fetch fails with 404
+        mock_edits.listings.return_value.get.return_value.execute.side_effect = _make_http_error(
+            404
+        )
+        mock_edits.delete.return_value.execute.return_value = None
+
+        details = client.get_app_details("com.example.app", "fr-FR")
+
+        assert details.package_name == "com.example.app"
+        assert details.title is None  # No listing found
+        assert details.default_language == "en-US"
+
+
+# =========================================================================
+# Reviews error paths
+# =========================================================================
+
+
+class TestReviewsExtended:
+    """Extended review tests."""
+
+    def test_get_reviews_with_translation(
+        self,
+        client: PlayStoreClient,
+        _mock_service: MagicMock,
+    ) -> None:
+        """Test get_reviews with translation language."""
+        _mock_service.reviews.return_value.list.return_value.execute.return_value = {
+            "reviews": [
+                {
+                    "reviewId": "r1",
+                    "authorName": "User",
+                    "comments": [
+                        {
+                            "userComment": {
+                                "starRating": 4,
+                                "text": "Good",
+                                "reviewerLanguage": "es",
+                                "lastModified": {"seconds": "1700000000", "nanos": 0},
+                            }
+                        }
+                    ],
+                }
+            ]
+        }
+
+        reviews = client.get_reviews("com.example.app", translation_language="en")
+
+        assert len(reviews) == 1
+        assert reviews[0].star_rating == 4
+
+    def test_get_reviews_developer_comment_only(
+        self,
+        client: PlayStoreClient,
+        _mock_service: MagicMock,
+    ) -> None:
+        """A review with only a developer comment (no userComment) is skipped."""
+        _mock_service.reviews.return_value.list.return_value.execute.return_value = {
+            "reviews": [
+                {
+                    "reviewId": "r1",
+                    "authorName": "User",
+                    "comments": [
+                        {"developerComment": {"text": "Thanks for reaching out"}},
+                    ],
+                }
+            ]
+        }
+
+        reviews = client.get_reviews("com.example.app")
+
+        # No user comment means the review is not appended.
+        assert reviews == []
+
+    def test_get_reviews_http_error(
+        self,
+        client: PlayStoreClient,
+        _mock_service: MagicMock,
+    ) -> None:
+        """Test get_reviews HttpError."""
+        _mock_service.reviews.return_value.list.return_value.execute.side_effect = _make_http_error(
+            403
+        )
+
+        with pytest.raises(PlayStoreClientError, match="Failed to fetch reviews"):
+            client.get_reviews("com.example.app")
+
+    def test_reply_to_review_http_error(
+        self,
+        client: PlayStoreClient,
+        _mock_service: MagicMock,
+    ) -> None:
+        """Test reply_to_review HttpError."""
+        _mock_service.reviews.return_value.reply.return_value.execute.side_effect = (
+            _make_http_error(403)
+        )
+
+        result = client.reply_to_review("com.example.app", "r1", "Thanks!")
+
+        assert result.success is False
+        assert "Failed to reply" in result.message
+
+
+# =========================================================================
+# Subscriptions error paths
+# =========================================================================
+
+
+class TestSubscriptionsExtended:
+    """Extended subscription tests."""
+
+    def test_list_subscriptions_http_error(
+        self,
+        client: PlayStoreClient,
+        _mock_service: MagicMock,
+    ) -> None:
+        """Test list_subscriptions HttpError."""
+        _mock_service.monetization.return_value.subscriptions.return_value.list.return_value.execute.side_effect = _make_http_error(
+            403
+        )
+
+        with pytest.raises(PlayStoreClientError, match="Failed to list subscriptions"):
+            client.list_subscriptions("com.example.app")
+
+    def test_get_subscription_purchase_success(
+        self,
+        client: PlayStoreClient,
+        _mock_service: MagicMock,
+    ) -> None:
+        """Test successful subscription purchase fetch."""
+        _mock_service.purchases.return_value.subscriptionsv2.return_value.get.return_value.execute.return_value = {
+            "latestOrderId": "order-123",
+            "subscriptionState": "SUBSCRIPTION_STATE_ACTIVE",
+            "lineItems": [
+                {
+                    "productId": "premium",
+                    "autoRenewingPlan": {"autoRenewEnabled": True},
+                }
+            ],
+        }
+
+        result = client.get_subscription_purchase("com.example.app", "premium", "token123")
+
+        assert result.subscription_id == "premium"
+        assert result.auto_renewing is True
+        assert result.order_id == "order-123"
+
+    def test_get_subscription_purchase_inactive(
+        self,
+        client: PlayStoreClient,
+        _mock_service: MagicMock,
+    ) -> None:
+        """Test subscription purchase that is not active."""
+        _mock_service.purchases.return_value.subscriptionsv2.return_value.get.return_value.execute.return_value = {
+            "latestOrderId": "order-456",
+            "subscriptionState": "SUBSCRIPTION_STATE_EXPIRED",
+            "lineItems": [
+                {
+                    "productId": "premium",
+                    "autoRenewingPlan": {"autoRenewEnabled": False},
+                }
+            ],
+        }
+
+        result = client.get_subscription_purchase("com.example.app", "premium", "token456")
+
+        assert result.auto_renewing is False
+
+    def test_get_subscription_purchase_http_error(
+        self,
+        client: PlayStoreClient,
+        _mock_service: MagicMock,
+    ) -> None:
+        """Test get_subscription_purchase HttpError."""
+        _mock_service.purchases.return_value.subscriptionsv2.return_value.get.return_value.execute.side_effect = _make_http_error(
+            404
+        )
+
+        with pytest.raises(PlayStoreClientError, match="Failed to get subscription status"):
+            client.get_subscription_purchase("com.example.app", "premium", "token")
+
+
+# =========================================================================
+# Voided purchases
+# =========================================================================
+
+
+class TestVoidedPurchases:
+    """Test voided purchases methods."""
+
+    def test_list_voided_purchases_success(
+        self,
+        client: PlayStoreClient,
+        _mock_service: MagicMock,
+    ) -> None:
+        """Test successful voided purchases fetch."""
+        _mock_service.purchases.return_value.voidedpurchases.return_value.list.return_value.execute.return_value = {
+            "voidedPurchases": [
+                {
+                    "purchaseToken": "tok1",
+                    "orderId": "order1",
+                    "voidedReason": 1,
+                    "voidedSource": 0,
+                    "voidedTimeMillis": "1700000000000",
+                },
+                {
+                    "purchaseToken": "tok2",
+                    "orderId": "order2",
+                    "voidedTimeMillis": "1700000100000",
+                },
+            ]
+        }
+
+        voided = client.list_voided_purchases("com.example.app")
+
+        assert len(voided) == 2
+        assert voided[0].purchase_token == "tok1"
+        assert voided[0].voided_reason == 1
+        assert voided[1].order_id == "order2"
+
+    def test_list_voided_purchases_empty(
+        self,
+        client: PlayStoreClient,
+        _mock_service: MagicMock,
+    ) -> None:
+        """Test voided purchases when none exist."""
+        _mock_service.purchases.return_value.voidedpurchases.return_value.list.return_value.execute.return_value = {}
+
+        voided = client.list_voided_purchases("com.example.app")
+
+        assert voided == []
+
+    def test_list_voided_purchases_http_error(
+        self,
+        client: PlayStoreClient,
+        _mock_service: MagicMock,
+    ) -> None:
+        """Test list_voided_purchases HttpError."""
+        _mock_service.purchases.return_value.voidedpurchases.return_value.list.return_value.execute.side_effect = _make_http_error(
+            403
+        )
+
+        with pytest.raises(PlayStoreClientError, match="Failed to list voided purchases"):
+            client.list_voided_purchases("com.example.app")
+
+
+# =========================================================================
+# Listing update error paths
+# =========================================================================
+
+
+class TestUpdateListingErrors:
+    """Test update_listing error handling."""
+
+    def test_update_listing_http_error(
+        self,
+        client: PlayStoreClient,
+        _mock_service: MagicMock,
+    ) -> None:
+        """Test update_listing HttpError."""
+        mock_edits = _mock_service.edits.return_value
+        mock_edits.insert.return_value.execute.return_value = {"id": "edit-123"}
+        mock_edits.listings.return_value.get.return_value.execute.return_value = {
+            "title": "Old",
+            "fullDescription": "Old desc",
+            "shortDescription": "Old short",
+        }
+        mock_edits.listings.return_value.update.return_value.execute.side_effect = _make_http_error(
+            403
+        )
+        mock_edits.delete.return_value.execute.return_value = None
+
+        result = client.update_listing(
+            package_name="com.example.app",
+            language="en-US",
+            title="New Title",
+        )
+
+        assert result.success is False
+        assert "Failed to update listing" in result.message
+
+    def test_update_listing_generic_exception(
+        self,
+        client: PlayStoreClient,
+        _mock_service: MagicMock,
+    ) -> None:
+        """Test update_listing generic Exception."""
+        mock_edits = _mock_service.edits.return_value
+        mock_edits.insert.return_value.execute.return_value = {"id": "edit-123"}
+        mock_edits.listings.return_value.get.return_value.execute.return_value = {}
+        mock_edits.listings.return_value.update.return_value.execute.side_effect = RuntimeError(
+            "boom"
+        )
+        mock_edits.delete.return_value.execute.return_value = None
+
+        result = client.update_listing(
+            package_name="com.example.app",
+            language="en-US",
+            full_description="New desc",
+        )
+
+        assert result.success is False
+        assert "boom" in result.message
+
+    def test_update_listing_current_listing_not_found(
+        self,
+        client: PlayStoreClient,
+        _mock_service: MagicMock,
+    ) -> None:
+        """Test update_listing when current listing doesn't exist."""
+        mock_edits = _mock_service.edits.return_value
+        mock_edits.insert.return_value.execute.return_value = {"id": "edit-123"}
+        # Current listing fetch fails
+        mock_edits.listings.return_value.get.return_value.execute.side_effect = _make_http_error(
+            404
+        )
+        mock_edits.listings.return_value.update.return_value.execute.return_value = {}
+        mock_edits.commit.return_value.execute.return_value = {}
+
+        # Need to reset side_effect after first call
+        call_count = 0
+
+        def get_side_effect() -> dict[str, Any]:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise _make_http_error(404)
+            return {}
+
+        mock_edits.listings.return_value.get.return_value.execute.side_effect = get_side_effect
+
+        result = client.update_listing(
+            package_name="com.example.app",
+            language="en-US",
+            title="Brand New",
+            short_description="New short",
+        )
+
+        assert result.success is True
+
+
+# =========================================================================
+# Testers error paths
+# =========================================================================
+
+
+class TestTestersExtended:
+    """Extended testers tests."""
+
+    def test_get_testers_404(
+        self,
+        client: PlayStoreClient,
+        _mock_service: MagicMock,
+    ) -> None:
+        """Test get_testers when no testers configured (404)."""
+        mock_edits = _mock_service.edits.return_value
+        mock_edits.insert.return_value.execute.return_value = {"id": "edit-123"}
+        mock_edits.testers.return_value.get.return_value.execute.side_effect = _make_http_error(404)
+        mock_edits.delete.return_value.execute.return_value = None
+
+        testers = client.get_testers("com.example.app", "internal")
+
+        assert testers.track == "internal"
+        assert testers.google_groups == []
+
+    def test_get_testers_other_error(
+        self,
+        client: PlayStoreClient,
+        _mock_service: MagicMock,
+    ) -> None:
+        """Test get_testers with non-404 error."""
+        mock_edits = _mock_service.edits.return_value
+        mock_edits.insert.return_value.execute.return_value = {"id": "edit-123"}
+        mock_edits.testers.return_value.get.return_value.execute.side_effect = _make_http_error(500)
+        mock_edits.delete.return_value.execute.return_value = None
+
+        with pytest.raises(PlayStoreClientError, match="Failed to get testers"):
+            client.get_testers("com.example.app", "internal")
+
+    def test_update_testers_http_error(
+        self,
+        client: PlayStoreClient,
+        _mock_service: MagicMock,
+    ) -> None:
+        """Test update_testers HttpError."""
+        mock_edits = _mock_service.edits.return_value
+        mock_edits.insert.return_value.execute.return_value = {"id": "edit-123"}
+        mock_edits.testers.return_value.update.return_value.execute.side_effect = _make_http_error(
+            403
+        )
+        mock_edits.delete.return_value.execute.return_value = None
+
+        result = client.update_testers("com.example.app", "beta", ["test@example.com"])
+
+        assert result["success"] is False
+        assert result["error"]
+
+
+# =========================================================================
+# Orders error paths
+# =========================================================================
+
+
+class TestOrdersExtended:
+    """Extended orders tests."""
+
+    def test_get_order_http_error(
+        self,
+        client: PlayStoreClient,
+        _mock_service: MagicMock,
+    ) -> None:
+        """Test get_order HttpError."""
+        _mock_service.orders.return_value.get.return_value.execute.side_effect = _make_http_error(
+            404
+        )
+
+        with pytest.raises(PlayStoreClientError, match="Failed to get order"):
+            client.get_order("com.example.app", "order-123")
+
+
+# =========================================================================
+# Expansion files error paths
+# =========================================================================
+
+
+class TestExpansionFilesExtended:
+    """Extended expansion file tests."""
+
+    def test_get_expansion_file_404(
+        self,
+        client: PlayStoreClient,
+        _mock_service: MagicMock,
+    ) -> None:
+        """Test get_expansion_file when no expansion file exists (404)."""
+        mock_edits = _mock_service.edits.return_value
+        mock_edits.insert.return_value.execute.return_value = {"id": "edit-123"}
+        mock_edits.expansionfiles.return_value.get.return_value.execute.side_effect = (
+            _make_http_error(404)
+        )
+        mock_edits.delete.return_value.execute.return_value = None
+
+        expansion = client.get_expansion_file("com.example.app", 100, "main")
+
+        assert expansion.version_code == 100
+        assert expansion.file_size is None
+
+    def test_get_expansion_file_other_error(
+        self,
+        client: PlayStoreClient,
+        _mock_service: MagicMock,
+    ) -> None:
+        """Test get_expansion_file with non-404 error."""
+        mock_edits = _mock_service.edits.return_value
+        mock_edits.insert.return_value.execute.return_value = {"id": "edit-123"}
+        mock_edits.expansionfiles.return_value.get.return_value.execute.side_effect = (
+            _make_http_error(500)
+        )
+        mock_edits.delete.return_value.execute.return_value = None
+
+        with pytest.raises(PlayStoreClientError, match="Failed to get expansion file"):
+            client.get_expansion_file("com.example.app", 100, "main")
+
+
+# =========================================================================
+# Validation edge cases
+# =========================================================================
+
+
+class TestValidationExtended:
+    """Extended validation tests."""
+
+    def test_validate_empty_package_name(self, client: PlayStoreClient) -> None:
+        """Test validating empty package name."""
+        errors = client.validate_package_name("")
+        assert len(errors) == 1
+        assert "empty" in errors[0].message.lower()
+
+    def test_validate_short_description_too_long(self, client: PlayStoreClient) -> None:
+        """Test validating short description that's too long."""
+        errors = client.validate_listing_text(short_description="A" * 81)
+        assert len(errors) == 1
+        assert "short_description" in errors[0].field
+
+    def test_validate_full_description_too_long(self, client: PlayStoreClient) -> None:
+        """Test validating full description that's too long."""
+        errors = client.validate_listing_text(full_description="A" * 4001)
+        assert len(errors) == 1
+        assert "full_description" in errors[0].field
+
+    def test_validate_all_listing_text_too_long(self, client: PlayStoreClient) -> None:
+        """Test validating all listing text fields too long."""
+        errors = client.validate_listing_text(
+            title="A" * 51,
+            short_description="B" * 81,
+            full_description="C" * 4001,
+        )
+        assert len(errors) == 3
+
+
+# =========================================================================
+# Batch deploy edge cases
+# =========================================================================
+
+
+class TestBatchDeployExtended:
+    """Extended batch deploy tests."""
+
+    def test_batch_deploy_with_rollout_percentages(
+        self,
+        client: PlayStoreClient,
+        _mock_service: MagicMock,
+        tmp_path: Any,
+    ) -> None:
+        """Test batch deploy with custom rollout percentages."""
+        apk_file = tmp_path / "app.apk"
+        apk_file.write_bytes(b"content")
+
+        mock_edits = _mock_service.edits.return_value
+        mock_edits.insert.return_value.execute.return_value = {"id": "edit-123"}
+        mock_edits.apks.return_value.upload.return_value.execute.return_value = {"versionCode": 100}
+        mock_edits.tracks.return_value.update.return_value.execute.return_value = {}
+        mock_edits.commit.return_value.execute.return_value = {}
+
+        result = client.batch_deploy(
+            package_name="com.example.app",
+            file_path=str(apk_file),
+            tracks=["internal", "production"],
+            release_notes="Test",
+            rollout_percentages={"production": 10.0},
+        )
+
+        assert result.success is True
+        assert result.successful_count == 2
+
+    def test_batch_deploy_partial_failure(
+        self,
+        client: PlayStoreClient,
+        _mock_service: MagicMock,
+        tmp_path: Any,
+    ) -> None:
+        """Test batch deploy where one track fails."""
+        apk_file = tmp_path / "app.apk"
+        apk_file.write_bytes(b"content")
+
+        mock_edits = _mock_service.edits.return_value
+        mock_edits.insert.return_value.execute.return_value = {"id": "edit-123"}
+
+        call_count = 0
+
+        def upload_side_effect(**_kwargs: Any) -> MagicMock:
+            nonlocal call_count
+            call_count += 1
+            mock = MagicMock()
+            if call_count > 1:
+                mock.execute.side_effect = _make_http_error(403)
+            else:
+                mock.execute.return_value = {"versionCode": 100}
+            return mock
+
+        mock_edits.apks.return_value.upload.side_effect = upload_side_effect
+        mock_edits.tracks.return_value.update.return_value.execute.return_value = {}
+        mock_edits.commit.return_value.execute.return_value = {}
+        mock_edits.delete.return_value.execute.return_value = None
+
+        result = client.batch_deploy(
+            package_name="com.example.app",
+            file_path=str(apk_file),
+            tracks=["internal", "beta"],
+        )
+
+        assert result.success is False
+        assert result.successful_count == 1
+        assert result.failed_count == 1
+        assert "failed" in result.message.lower()
+
+
+# =========================================================================
+# _delete_edit edge case
+# =========================================================================
+
+
+class TestDeleteEdit:
+    """Test _delete_edit error handling."""
+
+    def test_delete_edit_ignores_http_error(
+        self,
+        client: PlayStoreClient,
+        _mock_service: MagicMock,
+    ) -> None:
+        """Test that _delete_edit silently ignores HttpError."""
+        # First call _get_service to initialize
+        client._get_service()
+
+        _mock_service.edits.return_value.delete.return_value.execute.side_effect = _make_http_error(
+            404
+        )
+
+        # Should not raise
+        client._delete_edit("com.example.app", "edit-123")
+
+
+# =========================================================================
+# Empty responses edge cases (#40)
+# =========================================================================
+
+
+class TestEmptyResponses:
+    """Test handling of empty API responses."""
+
+    def test_get_reviews_empty(
+        self,
+        client: PlayStoreClient,
+        _mock_service: MagicMock,
+    ) -> None:
+        """Test get_reviews with empty response."""
+        _mock_service.reviews.return_value.list.return_value.execute.return_value = {}
+
+        reviews = client.get_reviews("com.example.app")
+
+        assert reviews == []
+
+    def test_get_releases_empty_tracks(
+        self,
+        client: PlayStoreClient,
+        _mock_service: MagicMock,
+    ) -> None:
+        """Test get_releases with empty tracks."""
+        mock_edits = _mock_service.edits.return_value
+        mock_edits.insert.return_value.execute.return_value = {"id": "edit-123"}
+        mock_edits.tracks.return_value.list.return_value.execute.return_value = {"tracks": []}
+        mock_edits.delete.return_value.execute.return_value = None
+
+        tracks = client.get_releases("com.example.app")
+
+        assert tracks == []
+
+    def test_batch_deploy_empty_tracks(
+        self,
+        client: PlayStoreClient,
+        tmp_path: Any,
+    ) -> None:
+        """Test batch_deploy with empty tracks list."""
+        apk_file = tmp_path / "app.apk"
+        apk_file.write_bytes(b"content")
+
+        result = client.batch_deploy(
+            package_name="com.example.app",
+            file_path=str(apk_file),
+            tracks=[],
+        )
+
+        assert result.success is True
+        assert result.successful_count == 0
+        assert result.failed_count == 0
+
+
+# =========================================================================
+# Boundary values (#40)
+# =========================================================================
+
+
+class TestBoundaryValues:
+    """Test boundary value conditions."""
+
+    def test_rollout_percentage_zero(
+        self,
+        client: PlayStoreClient,
+        _mock_service: MagicMock,
+        tmp_path: Any,
+    ) -> None:
+        """Test deployment with rollout_percentage=0.0."""
+        apk_file = tmp_path / "app.apk"
+        apk_file.write_bytes(b"content")
+
+        mock_edits = _mock_service.edits.return_value
+        mock_edits.insert.return_value.execute.return_value = {"id": "edit-123"}
+        mock_edits.apks.return_value.upload.return_value.execute.return_value = {"versionCode": 100}
+        mock_edits.tracks.return_value.update.return_value.execute.return_value = {}
+        mock_edits.commit.return_value.execute.return_value = {}
+
+        result = client.deploy_app(
+            package_name="com.example.app",
+            track="production",
+            file_path=str(apk_file),
+            rollout_percentage=0.0,
+        )
+
+        assert result.success is True
+        update_call = mock_edits.tracks.return_value.update.call_args
+        body = update_call.kwargs["body"]
+        assert body["releases"][0]["status"] == "inProgress"
+        assert body["releases"][0]["userFraction"] == 0.0
+
+    def test_rollout_percentage_100(
+        self,
+        client: PlayStoreClient,
+        _mock_service: MagicMock,
+        tmp_path: Any,
+    ) -> None:
+        """Test deployment with rollout_percentage=100.0."""
+        apk_file = tmp_path / "app.apk"
+        apk_file.write_bytes(b"content")
+
+        mock_edits = _mock_service.edits.return_value
+        mock_edits.insert.return_value.execute.return_value = {"id": "edit-123"}
+        mock_edits.apks.return_value.upload.return_value.execute.return_value = {"versionCode": 100}
+        mock_edits.tracks.return_value.update.return_value.execute.return_value = {}
+        mock_edits.commit.return_value.execute.return_value = {}
+
+        result = client.deploy_app(
+            package_name="com.example.app",
+            track="production",
+            file_path=str(apk_file),
+            rollout_percentage=100.0,
+        )
+
+        assert result.success is True
+        update_call = mock_edits.tracks.return_value.update.call_args
+        body = update_call.kwargs["body"]
+        assert body["releases"][0]["status"] == "completed"
+
+    def test_validate_listing_text_exactly_50_chars(self, client: PlayStoreClient) -> None:
+        """Test title at exactly 50 characters (valid)."""
+        errors = client.validate_listing_text(title="A" * 50)
+        assert len(errors) == 0
+
+    def test_validate_listing_text_exactly_80_chars(self, client: PlayStoreClient) -> None:
+        """Test short_description at exactly 80 characters (valid)."""
+        errors = client.validate_listing_text(short_description="B" * 80)
+        assert len(errors) == 0
+
+    def test_validate_listing_text_exactly_4000_chars(self, client: PlayStoreClient) -> None:
+        """Test full_description at exactly 4000 characters (valid)."""
+        errors = client.validate_listing_text(full_description="C" * 4000)
+        assert len(errors) == 0
+
+
+# =========================================================================
+# Edit failures (#40)
+# =========================================================================
+
+
+class TestEditFailures:
+    """Test _create_edit and _commit_edit failure handling."""
+
+    def test_create_edit_failure(
+        self,
+        client: PlayStoreClient,
+        _mock_service: MagicMock,
+    ) -> None:
+        """Test _create_edit failure is wrapped in PlayStoreClientError."""
+        mock_edits = _mock_service.edits.return_value
+        mock_edits.insert.return_value.execute.side_effect = _make_http_error(403, "forbidden")
+
+        with pytest.raises(PlayStoreClientError, match="Failed to create edit"):
+            client._create_edit("com.example.app")
+
+    def test_commit_edit_failure(
+        self,
+        client: PlayStoreClient,
+        _mock_service: MagicMock,
+    ) -> None:
+        """Test _commit_edit failure propagates."""
+        # Initialize service first
+        client._get_service()
+
+        mock_edits = _mock_service.edits.return_value
+        mock_edits.commit.return_value.execute.side_effect = _make_http_error(500, "server error")
+
+        with pytest.raises(HttpError):
+            client._commit_edit("com.example.app", "edit-123")
+
+
+class TestEditSetupFailureReturnsResult:
+    """A failure creating the edit (before any upload/track work) must still
+
+    return the method's documented Result object, not raise uncaught -- these
+    methods promise a typed Result on every path, and _create_edit's failure
+    is a routine one (bad package name, no permission, edit-quota exceeded,
+    transient outage), not something callers should need a try/except for.
+    """
+
+    def test_deploy_app_returns_result_on_create_edit_failure(
+        self,
+        client: PlayStoreClient,
+        _mock_service: MagicMock,
+        tmp_path: Any,
+    ) -> None:
+        apk = tmp_path / "app.apk"
+        apk.write_bytes(b"fake apk")
+        mock_edits = _mock_service.edits.return_value
+        mock_edits.insert.return_value.execute.side_effect = _make_http_error(403, "forbidden")
+
+        result = client.deploy_app("com.example.app", "internal", str(apk))
+
+        assert result.success is False
+        assert "Deployment failed" in result.message
+
+    def test_promote_release_returns_result_on_create_edit_failure(
+        self,
+        client: PlayStoreClient,
+        _mock_service: MagicMock,
+    ) -> None:
+        mock_edits = _mock_service.edits.return_value
+        mock_edits.insert.return_value.execute.side_effect = _make_http_error(403, "forbidden")
+
+        result = client.promote_release("com.example.app", "beta", "production", 100)
+
+        assert result.success is False
+        assert "Promotion failed" in result.message
+
+    def test_halt_release_returns_result_on_create_edit_failure(
+        self,
+        client: PlayStoreClient,
+        _mock_service: MagicMock,
+    ) -> None:
+        mock_edits = _mock_service.edits.return_value
+        mock_edits.insert.return_value.execute.side_effect = _make_http_error(403, "forbidden")
+
+        result = client.halt_release("com.example.app", "production", 100)
+
+        assert result.success is False
+        assert "Halt failed" in result.message
+
+    def test_update_rollout_returns_result_on_create_edit_failure(
+        self,
+        client: PlayStoreClient,
+        _mock_service: MagicMock,
+    ) -> None:
+        mock_edits = _mock_service.edits.return_value
+        mock_edits.insert.return_value.execute.side_effect = _make_http_error(403, "forbidden")
+
+        result = client.update_rollout("com.example.app", "production", 100, 50.0)
+
+        assert result.success is False
+        assert "Rollout update failed" in result.message
+
+    def test_update_listing_returns_result_on_create_edit_failure(
+        self,
+        client: PlayStoreClient,
+        _mock_service: MagicMock,
+    ) -> None:
+        mock_edits = _mock_service.edits.return_value
+        mock_edits.insert.return_value.execute.side_effect = _make_http_error(403, "forbidden")
+
+        result = client.update_listing("com.example.app", "en-US", title="New Title")
+
+        assert result.success is False
+        assert "Failed to update listing" in result.message
+
+    def test_update_testers_returns_result_on_create_edit_failure(
+        self,
+        client: PlayStoreClient,
+        _mock_service: MagicMock,
+    ) -> None:
+        mock_edits = _mock_service.edits.return_value
+        mock_edits.insert.return_value.execute.side_effect = _make_http_error(403, "forbidden")
+
+        result = client.update_testers("com.example.app", "internal", ["testers@example.com"])
+
+        assert result["success"] is False
+        assert "error" in result
+
+
+# =========================================================================
+# _parse_timestamp helper
+# =========================================================================
+
+
+class TestParseTimestamp:
+    """Test the _parse_timestamp helper."""
+
+    def test_parse_timestamp_none(self) -> None:
+        """None/empty input returns None."""
+        from play_store_mcp.client import _parse_timestamp
+
+        assert _parse_timestamp(None) is None
+        assert _parse_timestamp({}) is None
+
+    def test_parse_timestamp_missing_seconds(self) -> None:
+        """A dict without 'seconds' returns None."""
+        from play_store_mcp.client import _parse_timestamp
+
+        assert _parse_timestamp({"nanos": 5}) is None
+
+    def test_parse_timestamp_valid(self) -> None:
+        """A valid protobuf timestamp is parsed to a datetime."""
+        from play_store_mcp.client import _parse_timestamp
+
+        result = _parse_timestamp({"seconds": "1700000000", "nanos": 0})
+        assert result is not None
+        assert result.year == 2023
+
+    def test_parse_timestamp_invalid_value(self) -> None:
+        """A non-numeric 'seconds' triggers the except branch and returns None."""
+        from play_store_mcp.client import _parse_timestamp
+
+        assert _parse_timestamp({"seconds": "not-a-number"}) is None
+
+    def test_parse_timestamp_out_of_range(self) -> None:
+        """An out-of-range 'seconds' raises ValueError and returns None."""
+        from play_store_mcp.client import _parse_timestamp
+
+        # A value whose year exceeds 9999 makes fromtimestamp raise ValueError.
+        assert _parse_timestamp({"seconds": "100000000000000"}) is None
+
+
+# =========================================================================
+# credentials_json handling in _get_service
+# =========================================================================
+
+
+class TestCredentialsJson:
+    """Test the credentials_json branch of _get_service."""
+
+    def test_credentials_json_string(self, _mock_service: MagicMock) -> None:
+        """A JSON string starting with '{' uses from_service_account_info."""
+        client = PlayStoreClient(credentials_json='{"type": "service_account"}')
+
+        with patch(
+            "play_store_mcp.client.service_account.Credentials.from_service_account_info"
+        ) as mock_info:
+            mock_info.return_value = MagicMock()
+            client._get_service()
+
+        mock_info.assert_called_once()
+
+    def test_credentials_json_path(self, _mock_service: MagicMock, tmp_path: Any) -> None:
+        """A filesystem path string is read and passed to from_service_account_info."""
+        creds_file = tmp_path / "creds.json"
+        creds_file.write_text('{"type": "service_account"}')
+        client = PlayStoreClient(credentials_json=str(creds_file))
+
+        with patch(
+            "play_store_mcp.client.service_account.Credentials.from_service_account_info"
+        ) as mock_info:
+            mock_info.return_value = MagicMock()
+            client._get_service()
+
+        mock_info.assert_called_once()
+
+    def test_credentials_json_invalid_json(self, _mock_service: MagicMock) -> None:
+        """An invalid JSON string starting with '{' logs a warning and yields no creds."""
+        client = PlayStoreClient(credentials_json="{not valid json")
+
+        with pytest.raises(PlayStoreClientError, match="No valid credentials found"):
+            client._get_service()
+
+    def test_credentials_json_dict(self, _mock_service: MagicMock) -> None:
+        """A dict uses from_service_account_info."""
+        client = PlayStoreClient(credentials_json={"type": "service_account"})
+
+        with patch(
+            "play_store_mcp.client.service_account.Credentials.from_service_account_info"
+        ) as mock_info:
+            mock_info.return_value = MagicMock()
+            client._get_service()
+
+        mock_info.assert_called_once()
+
+    def test_credentials_json_string_not_json_not_path(self, _mock_service: MagicMock) -> None:
+        """A string that is neither JSON nor an existing path falls through to no creds."""
+        client = PlayStoreClient(credentials_json="/nonexistent/path/creds.json")
+
+        with pytest.raises(PlayStoreClientError, match="No valid credentials found"):
+            client._get_service()
+
+    def test_credentials_json_wrong_type(self, _mock_service: MagicMock) -> None:
+        """A truthy non-str, non-dict credentials_json yields no creds."""
+        client = PlayStoreClient(credentials_json=12345)  # type: ignore[arg-type]
+
+        with pytest.raises(PlayStoreClientError, match="No valid credentials found"):
+            client._get_service()
+
+    def test_credentials_json_dict_rejects_spoofed_token_uri(
+        self, _mock_service: MagicMock
+    ) -> None:
+        """A dict with a non-Google token_uri is rejected before credentials are built.
+
+        Regression test for an SSRF: per-request credentials arrive over an
+        unauthenticated HTTP header (X-Google-Credentials), so an attacker
+        could otherwise point token_uri at an arbitrary URL and have this
+        server POST a signed JWT-bearer assertion there on refresh.
+        """
+        client = PlayStoreClient(
+            credentials_json={
+                "type": "service_account",
+                "client_email": "test@example.com",
+                "token_uri": "https://attacker.example.com/steal",
+            }
+        )
+
+        with pytest.raises(PlayStoreClientError, match="Invalid token_uri"):
+            client._get_service()
+
+    def test_credentials_json_string_rejects_spoofed_token_uri(
+        self, _mock_service: MagicMock
+    ) -> None:
+        """A JSON string with a non-Google token_uri is rejected the same way."""
+        client = PlayStoreClient(
+            credentials_json=(
+                '{"type": "service_account", "client_email": "test@example.com", '
+                '"token_uri": "https://attacker.example.com/steal"}'
+            )
+        )
+
+        with pytest.raises(PlayStoreClientError, match="Invalid token_uri"):
+            client._get_service()
+
+    def test_credentials_json_path_rejects_spoofed_token_uri(
+        self, _mock_service: MagicMock, tmp_path: Any
+    ) -> None:
+        """A credentials file with a non-Google token_uri is rejected the same way."""
+        creds_file = tmp_path / "spoofed-creds.json"
+        creds_file.write_text(
+            '{"type": "service_account", "client_email": "test@example.com", '
+            '"token_uri": "https://attacker.example.com/steal"}'
+        )
+        client = PlayStoreClient(credentials_json=str(creds_file))
+
+        with pytest.raises(PlayStoreClientError, match="Invalid token_uri"):
+            client._get_service()
+
+    def test_credentials_json_missing_token_uri_not_rejected_by_validation(
+        self, _mock_service: MagicMock
+    ) -> None:
+        """No token_uri at all passes our validation (google-auth enforces required fields itself)."""
+        client = PlayStoreClient(credentials_json={"type": "service_account"})
+
+        with patch(
+            "play_store_mcp.client.service_account.Credentials.from_service_account_info"
+        ) as mock_info:
+            mock_info.return_value = MagicMock()
+            client._get_service()
+
+        mock_info.assert_called_once()
+
+
+# =========================================================================
+# In-app products error paths
+# =========================================================================
+
+
+class TestInAppProductsErrors:
+    """Test in-app product HttpError handling."""
+
+    def test_list_in_app_products_http_error(
+        self,
+        client: PlayStoreClient,
+        _mock_service: MagicMock,
+    ) -> None:
+        """list_in_app_products wraps HttpError as PlayStoreClientError."""
+        _mock_service.inappproducts.return_value.list.return_value.execute.side_effect = (
+            _make_http_error(403, "forbidden")
+        )
+
+        with pytest.raises(PlayStoreClientError, match="Failed to list in-app products"):
+            client.list_in_app_products("com.example.app")
+
+    def test_get_in_app_product_http_error(
+        self,
+        client: PlayStoreClient,
+        _mock_service: MagicMock,
+    ) -> None:
+        """get_in_app_product wraps HttpError as PlayStoreClientError."""
+        _mock_service.inappproducts.return_value.get.return_value.execute.side_effect = (
+            _make_http_error(404, "not found")
+        )
+
+        with pytest.raises(PlayStoreClientError, match="Failed to get in-app product"):
+            client.get_in_app_product("com.example.app", "sku1")
+
+    def test_get_in_app_product_no_default_price(
+        self,
+        client: PlayStoreClient,
+        _mock_service: MagicMock,
+    ) -> None:
+        """get_in_app_product handles a product without a defaultPrice."""
+        _mock_service.inappproducts.return_value.get.return_value.execute.return_value = {
+            "sku": "sku1",
+            "purchaseType": "managedProduct",
+        }
+
+        product = client.get_in_app_product("com.example.app", "sku1")
+
+        assert product.sku == "sku1"
+        assert product.default_price is None
+
+
+# =========================================================================
+# update_listing with video
+# =========================================================================
+
+
+class TestUpdateListingVideo:
+    """Test update_listing setting the video field."""
+
+    def test_update_listing_with_video(
+        self,
+        client: PlayStoreClient,
+        _mock_service: MagicMock,
+    ) -> None:
+        """update_listing with a video arg includes it in the update body."""
+        mock_edits = _mock_service.edits.return_value
+        mock_edits.insert.return_value.execute.return_value = {"id": "edit-123"}
+        mock_edits.listings.return_value.get.return_value.execute.return_value = {
+            "title": "Old",
+            "fullDescription": "Old desc",
+            "shortDescription": "Old short",
+        }
+        mock_edits.listings.return_value.update.return_value.execute.return_value = {}
+        mock_edits.commit.return_value.execute.return_value = {}
+
+        result = client.update_listing(
+            package_name="com.example.app",
+            language="en-US",
+            video="https://youtube.com/watch?v=abc",
+        )
+
+        assert result.success is True
+        update_call = mock_edits.listings.return_value.update.call_args
+        assert update_call.kwargs["body"]["video"] == "https://youtube.com/watch?v=abc"

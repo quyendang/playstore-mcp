@@ -1,0 +1,200 @@
+"""Pytest configuration and fixtures."""
+
+from __future__ import annotations
+
+import logging
+import os
+from typing import TYPE_CHECKING, Any
+from unittest.mock import MagicMock, patch
+
+import structlog
+
+if TYPE_CHECKING:
+    from collections.abc import Generator
+
+# CODE_MODE now defaults to enabled, but the module-level `mcp` singleton in
+# server.py is built once at import time from whatever CODE_MODE is in the
+# environment at that moment — most of this suite (and the "117 tools"
+# classic-surface assertion) exercises that singleton directly, so pin it to
+# the classic tool list here. Must run before ANY `play_store_mcp` import
+# below (even `play_store_mcp.client`), since `play_store_mcp/__init__.py`
+# eagerly imports `server`. Code-mode-specific tests build fresh transforms
+# via server._build_transforms() with their own monkeypatched CODE_MODE and
+# are unaffected by this default.
+os.environ.setdefault("CODE_MODE", "0")
+
+import pytest
+
+from play_store_mcp.client import PlayStoreClient
+
+# Suppress structlog's Rich-rendered tracebacks (fastmcp pulls in `rich`) on the
+# ~130 client error/warning log sites the error-path tests hit — a ~16x suite
+# slowdown. Two paths configure structlog: filter here at CRITICAL for tests that
+# import only the client (structlog's default config is unfiltered + Rich), and
+# set the env var so the server module — when a test imports it — also configures
+# at CRITICAL rather than INFO. Both drop WARNING/ERROR before any renderer runs.
+# Overridable by exporting PLAY_STORE_MCP_LOG_LEVEL.
+os.environ.setdefault("PLAY_STORE_MCP_LOG_LEVEL", "CRITICAL")
+structlog.configure(wrapper_class=structlog.make_filtering_bound_logger(logging.CRITICAL))
+
+
+@pytest.fixture(autouse=True)
+def _no_backoff_sleep() -> Generator[None, None, None]:
+    """Neutralize retry backoff sleeps so retry paths run instantly in tests."""
+    with patch("play_store_mcp.client.time.sleep"):
+        yield
+
+
+@pytest.fixture(autouse=True)
+def _reset_shared_state() -> Generator[None, None, None]:
+    """Restore the module-level shared state after each test to avoid order dependence."""
+    from play_store_mcp import server
+
+    saved = dict(server._shared_state)
+    yield
+    server._shared_state.clear()
+    server._shared_state.update(saved)
+
+
+@pytest.fixture
+def _mock_credentials() -> Generator[MagicMock, None, None]:
+    """Mock Google credentials.
+
+    All credential-resolution branches (dict, JSON string, file path) funnel
+    through ``from_service_account_info`` so the token_uri validation in
+    ``_build_credentials_from_info`` is a single, universal choke point —
+    so that's the call this mocks, not ``from_service_account_file``.
+    """
+    with patch(
+        "play_store_mcp.client.service_account.Credentials.from_service_account_info"
+    ) as mock:
+        mock.return_value = MagicMock()
+        yield mock
+
+
+@pytest.fixture
+def _mock_service() -> Generator[MagicMock, None, None]:
+    """Mock the Google API service."""
+    with patch("play_store_mcp.client.build") as mock_build:
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        yield mock_service
+
+
+@pytest.fixture
+def client(
+    _mock_credentials: MagicMock,
+    _mock_service: MagicMock,
+    tmp_path: Any,
+) -> PlayStoreClient:
+    """Create a PlayStoreClient with mocked dependencies."""
+    # Create a fake credentials file
+    creds_file = tmp_path / "service-account.json"
+    creds_file.write_text('{"type": "service_account"}')
+
+    return PlayStoreClient(credentials_path=str(creds_file))
+
+
+@pytest.fixture
+def sample_track_response() -> dict[str, Any]:
+    """Sample response from tracks().list()."""
+    return {
+        "tracks": [
+            {
+                "track": "production",
+                "releases": [
+                    {
+                        "status": "completed",
+                        "versionCodes": ["100"],
+                        "name": "1.0.0",
+                        "releaseNotes": [{"language": "en-US", "text": "Initial release"}],
+                    }
+                ],
+            },
+            {
+                "track": "beta",
+                "releases": [
+                    {
+                        "status": "inProgress",
+                        "versionCodes": ["101"],
+                        "name": "1.1.0-beta",
+                        "userFraction": 0.5,
+                        "releaseNotes": [{"language": "en-US", "text": "Beta features"}],
+                    }
+                ],
+            },
+        ]
+    }
+
+
+@pytest.fixture
+def sample_reviews_response() -> dict[str, Any]:
+    """Sample response from reviews().list()."""
+    return {
+        "reviews": [
+            {
+                "reviewId": "review-123",
+                "authorName": "Test User",
+                "comments": [
+                    {
+                        "userComment": {
+                            "starRating": 5,
+                            "text": "Great app!",
+                            "reviewerLanguage": "en",
+                            "device": "Pixel 6",
+                            "androidOsVersion": "13",
+                            "appVersionCode": 100,
+                            "appVersionName": "1.0.0",
+                            "lastModified": {"seconds": "1700000000", "nanos": 0},
+                        }
+                    }
+                ],
+            },
+            {
+                "reviewId": "review-456",
+                "authorName": "Another User",
+                "comments": [
+                    {
+                        "userComment": {
+                            "starRating": 3,
+                            "text": "Needs improvement",
+                            "reviewerLanguage": "en",
+                            "lastModified": {"seconds": "1700000100", "nanos": 0},
+                        }
+                    },
+                    {
+                        "developerComment": {
+                            "text": "Thanks for the feedback!",
+                        }
+                    },
+                ],
+            },
+        ]
+    }
+
+
+@pytest.fixture
+def sample_subscriptions_response() -> dict[str, Any]:
+    """Sample response from monetization().subscriptions().list()."""
+    return {
+        "subscriptions": [
+            {
+                "productId": "premium_monthly",
+                "basePlans": [
+                    {
+                        "basePlanId": "monthly",
+                        "state": "ACTIVE",
+                    }
+                ],
+            },
+            {
+                "productId": "premium_yearly",
+                "basePlans": [
+                    {
+                        "basePlanId": "yearly",
+                        "state": "ACTIVE",
+                    }
+                ],
+            },
+        ]
+    }

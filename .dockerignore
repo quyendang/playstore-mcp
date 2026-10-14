@@ -1,0 +1,14 @@
+.git
+.venv
+.env*
+__pycache__
+.pytest_cache
+.ruff_cache
+.mypy_cache
+*.local
+*.log
+*.sqlite3*
+credentials*.json
+service-account*.json
+*-service-account.json
+.terraform

@@ -1,0 +1,470 @@
+[
+  {
+    "name": "deploy_app",
+    "mutates_play": true
+  },
+  {
+    "name": "deploy_app_multilang",
+    "mutates_play": true
+  },
+  {
+    "name": "promote_release",
+    "mutates_play": true
+  },
+  {
+    "name": "get_releases",
+    "mutates_play": false
+  },
+  {
+    "name": "halt_release",
+    "mutates_play": true
+  },
+  {
+    "name": "update_rollout",
+    "mutates_play": true
+  },
+  {
+    "name": "get_app_details",
+    "mutates_play": false
+  },
+  {
+    "name": "get_reviews",
+    "mutates_play": false
+  },
+  {
+    "name": "reply_to_review",
+    "mutates_play": true
+  },
+  {
+    "name": "get_review",
+    "mutates_play": false
+  },
+  {
+    "name": "list_subscriptions",
+    "mutates_play": false
+  },
+  {
+    "name": "get_subscription_status",
+    "mutates_play": false
+  },
+  {
+    "name": "list_voided_purchases",
+    "mutates_play": false
+  },
+  {
+    "name": "get_product_purchase",
+    "mutates_play": false
+  },
+  {
+    "name": "acknowledge_product_purchase",
+    "mutates_play": true
+  },
+  {
+    "name": "consume_product_purchase",
+    "mutates_play": true
+  },
+  {
+    "name": "refund_order",
+    "mutates_play": true
+  },
+  {
+    "name": "cancel_subscription_purchase",
+    "mutates_play": true
+  },
+  {
+    "name": "defer_subscription_purchase",
+    "mutates_play": true
+  },
+  {
+    "name": "revoke_subscription_purchase",
+    "mutates_play": true
+  },
+  {
+    "name": "get_product_purchase_v2",
+    "mutates_play": false
+  },
+  {
+    "name": "list_in_app_products",
+    "mutates_play": false
+  },
+  {
+    "name": "get_in_app_product",
+    "mutates_play": false
+  },
+  {
+    "name": "create_in_app_product",
+    "mutates_play": true
+  },
+  {
+    "name": "update_in_app_product",
+    "mutates_play": true
+  },
+  {
+    "name": "patch_in_app_product",
+    "mutates_play": true
+  },
+  {
+    "name": "delete_in_app_product",
+    "mutates_play": true
+  },
+  {
+    "name": "batch_get_in_app_products",
+    "mutates_play": false
+  },
+  {
+    "name": "batch_delete_in_app_products",
+    "mutates_play": true
+  },
+  {
+    "name": "get_one_time_product",
+    "mutates_play": false
+  },
+  {
+    "name": "list_one_time_products",
+    "mutates_play": false
+  },
+  {
+    "name": "batch_get_one_time_products",
+    "mutates_play": false
+  },
+  {
+    "name": "patch_one_time_product",
+    "mutates_play": true
+  },
+  {
+    "name": "delete_one_time_product",
+    "mutates_play": true
+  },
+  {
+    "name": "batch_update_one_time_products",
+    "mutates_play": true
+  },
+  {
+    "name": "batch_delete_one_time_products",
+    "mutates_play": true
+  },
+  {
+    "name": "batch_delete_purchase_options",
+    "mutates_play": true
+  },
+  {
+    "name": "batch_update_purchase_option_states",
+    "mutates_play": true
+  },
+  {
+    "name": "list_purchase_option_offers",
+    "mutates_play": false
+  },
+  {
+    "name": "batch_get_purchase_option_offers",
+    "mutates_play": false
+  },
+  {
+    "name": "activate_purchase_option_offer",
+    "mutates_play": true
+  },
+  {
+    "name": "deactivate_purchase_option_offer",
+    "mutates_play": true
+  },
+  {
+    "name": "cancel_purchase_option_offer",
+    "mutates_play": true
+  },
+  {
+    "name": "batch_update_purchase_option_offers",
+    "mutates_play": true
+  },
+  {
+    "name": "batch_update_purchase_option_offer_states",
+    "mutates_play": true
+  },
+  {
+    "name": "batch_delete_purchase_option_offers",
+    "mutates_play": true
+  },
+  {
+    "name": "get_subscription",
+    "mutates_play": false
+  },
+  {
+    "name": "create_subscription",
+    "mutates_play": true
+  },
+  {
+    "name": "patch_subscription",
+    "mutates_play": true
+  },
+  {
+    "name": "delete_subscription",
+    "mutates_play": true
+  },
+  {
+    "name": "batch_get_subscriptions",
+    "mutates_play": false
+  },
+  {
+    "name": "batch_update_subscriptions",
+    "mutates_play": true
+  },
+  {
+    "name": "activate_base_plan",
+    "mutates_play": true
+  },
+  {
+    "name": "deactivate_base_plan",
+    "mutates_play": true
+  },
+  {
+    "name": "delete_base_plan",
+    "mutates_play": true
+  },
+  {
+    "name": "migrate_base_plan_prices",
+    "mutates_play": true
+  },
+  {
+    "name": "batch_migrate_base_plan_prices",
+    "mutates_play": true
+  },
+  {
+    "name": "batch_update_base_plan_states",
+    "mutates_play": true
+  },
+  {
+    "name": "get_subscription_offer",
+    "mutates_play": false
+  },
+  {
+    "name": "list_subscription_offers",
+    "mutates_play": false
+  },
+  {
+    "name": "create_subscription_offer",
+    "mutates_play": true
+  },
+  {
+    "name": "patch_subscription_offer",
+    "mutates_play": true
+  },
+  {
+    "name": "activate_subscription_offer",
+    "mutates_play": true
+  },
+  {
+    "name": "deactivate_subscription_offer",
+    "mutates_play": true
+  },
+  {
+    "name": "delete_subscription_offer",
+    "mutates_play": true
+  },
+  {
+    "name": "batch_get_subscription_offers",
+    "mutates_play": false
+  },
+  {
+    "name": "batch_update_subscription_offers",
+    "mutates_play": true
+  },
+  {
+    "name": "batch_update_subscription_offer_states",
+    "mutates_play": true
+  },
+  {
+    "name": "get_listing",
+    "mutates_play": false
+  },
+  {
+    "name": "update_listing",
+    "mutates_play": true
+  },
+  {
+    "name": "list_all_listings",
+    "mutates_play": false
+  },
+  {
+    "name": "get_testers",
+    "mutates_play": false
+  },
+  {
+    "name": "update_testers",
+    "mutates_play": true
+  },
+  {
+    "name": "get_order",
+    "mutates_play": false
+  },
+  {
+    "name": "batch_get_orders",
+    "mutates_play": false
+  },
+  {
+    "name": "get_external_transaction",
+    "mutates_play": false
+  },
+  {
+    "name": "create_external_transaction",
+    "mutates_play": true
+  },
+  {
+    "name": "refund_external_transaction",
+    "mutates_play": true
+  },
+  {
+    "name": "get_device_tier_config",
+    "mutates_play": false
+  },
+  {
+    "name": "list_device_tier_configs",
+    "mutates_play": false
+  },
+  {
+    "name": "create_device_tier_config",
+    "mutates_play": true
+  },
+  {
+    "name": "list_users",
+    "mutates_play": false
+  },
+  {
+    "name": "create_user",
+    "mutates_play": true
+  },
+  {
+    "name": "update_user",
+    "mutates_play": true
+  },
+  {
+    "name": "delete_user",
+    "mutates_play": true
+  },
+  {
+    "name": "create_grant",
+    "mutates_play": true
+  },
+  {
+    "name": "update_grant",
+    "mutates_play": true
+  },
+  {
+    "name": "delete_grant",
+    "mutates_play": true
+  },
+  {
+    "name": "set_data_safety",
+    "mutates_play": true
+  },
+  {
+    "name": "list_app_recoveries",
+    "mutates_play": false
+  },
+  {
+    "name": "create_app_recovery",
+    "mutates_play": true
+  },
+  {
+    "name": "deploy_app_recovery",
+    "mutates_play": true
+  },
+  {
+    "name": "cancel_app_recovery",
+    "mutates_play": true
+  },
+  {
+    "name": "add_app_recovery_targeting",
+    "mutates_play": true
+  },
+  {
+    "name": "list_generated_apks",
+    "mutates_play": false
+  },
+  {
+    "name": "download_generated_apk",
+    "mutates_play": false
+  },
+  {
+    "name": "get_system_apk_variant",
+    "mutates_play": false
+  },
+  {
+    "name": "list_system_apk_variants",
+    "mutates_play": false
+  },
+  {
+    "name": "create_system_apk_variant",
+    "mutates_play": true
+  },
+  {
+    "name": "download_system_apk_variant",
+    "mutates_play": false
+  },
+  {
+    "name": "get_expansion_file",
+    "mutates_play": false
+  },
+  {
+    "name": "list_apks",
+    "mutates_play": false
+  },
+  {
+    "name": "list_bundles",
+    "mutates_play": false
+  },
+  {
+    "name": "upload_apk",
+    "mutates_play": true
+  },
+  {
+    "name": "upload_bundle",
+    "mutates_play": true
+  },
+  {
+    "name": "upload_deobfuscation_file",
+    "mutates_play": true
+  },
+  {
+    "name": "upload_expansion_file",
+    "mutates_play": true
+  },
+  {
+    "name": "list_images",
+    "mutates_play": false
+  },
+  {
+    "name": "upload_image",
+    "mutates_play": true
+  },
+  {
+    "name": "delete_image",
+    "mutates_play": true
+  },
+  {
+    "name": "delete_all_images",
+    "mutates_play": true
+  },
+  {
+    "name": "validate_package_name",
+    "mutates_play": false
+  },
+  {
+    "name": "validate_track",
+    "mutates_play": false
+  },
+  {
+    "name": "validate_listing_text",
+    "mutates_play": false
+  },
+  {
+    "name": "batch_deploy",
+    "mutates_play": true
+  },
+  {
+    "name": "upload_internal_app_sharing_apk",
+    "mutates_play": true
+  },
+  {
+    "name": "upload_internal_app_sharing_bundle",
+    "mutates_play": true
+  }
+]

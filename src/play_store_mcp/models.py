@@ -1,0 +1,559 @@
+"""Pydantic models for Play Store MCP Server."""
+
+from __future__ import annotations
+
+from datetime import datetime  # noqa: TC003 - Pydantic needs this at runtime
+from typing import Any
+
+from pydantic import BaseModel, Field
+
+_DESC_PACKAGE_NAME = "App package name"
+_DESC_STATUS_MESSAGE = "Status message"
+_DESC_ERROR = "Error details if failed"
+_DESC_PURCHASE_TOKEN = "Purchase token"  # noqa: S105 # nosec B105 — field description; not a credential
+_DESC_ORDER_ID = "Order ID"
+_DESC_SUCCESS = "Whether the action succeeded"
+
+
+class OperationResult(BaseModel):
+    """Base for write-action results: the shared success/message/error trio.
+
+    Subclasses add whatever identifying fields (package_name, track, ...)
+    their specific operation needs.
+    """
+
+    success: bool = Field(..., description=_DESC_SUCCESS)
+    message: str = Field(..., description=_DESC_STATUS_MESSAGE)
+    error: str | None = Field(None, description=_DESC_ERROR)
+
+
+class Release(BaseModel):
+    """Represents an app release on a track."""
+
+    package_name: str = Field(..., description=_DESC_PACKAGE_NAME)
+    track: str = Field(..., description="Release track")
+    status: str = Field(..., description="Release status")
+    version_codes: list[int] = Field(default_factory=list, description="Version codes in release")
+    version_name: str | None = Field(None, description="Version name")
+    rollout_percentage: float = Field(100.0, description="Rollout percentage (0-100)")
+    release_notes: dict[str, str] = Field(
+        default_factory=dict, description="Release notes by language"
+    )
+
+
+class TrackInfo(BaseModel):
+    """Information about a release track."""
+
+    track: str = Field(..., description="Track name")
+    releases: list[Release] = Field(default_factory=list, description="Releases on this track")
+
+
+class DeploymentResult(OperationResult):
+    """Result of a deployment operation."""
+
+    edit_id: str | None = Field(None, description="Edit ID for the operation")
+    package_name: str = Field(..., description=_DESC_PACKAGE_NAME)
+    track: str = Field(..., description="Target track")
+    version_code: int | None = Field(None, description="Deployed version code")
+
+
+class AppDetails(BaseModel):
+    """Detailed app information."""
+
+    package_name: str = Field(..., description=_DESC_PACKAGE_NAME)
+    title: str | None = Field(None, description="App title")
+    short_description: str | None = Field(None, description="Short description")
+    full_description: str | None = Field(None, description="Full description")
+    default_language: str | None = Field(None, description="Default language")
+    developer_name: str | None = Field(None, description="Developer name")
+    developer_email: str | None = Field(None, description="Developer email")
+    developer_website: str | None = Field(None, description="Developer website")
+
+
+class Review(BaseModel):
+    """User review."""
+
+    review_id: str = Field(..., description="Review ID")
+    author_name: str = Field(..., description="Author name")
+    star_rating: int = Field(..., description="Star rating (1-5)")
+    comment: str = Field(..., description="Review comment")
+    language: str = Field(..., description="Review language")
+    device: str | None = Field(None, description="Device name")
+    android_version: str | None = Field(None, description="Android OS version")
+    app_version_code: int | None = Field(None, description="App version code")
+    app_version_name: str | None = Field(None, description="App version name")
+    last_modified: datetime | None = Field(None, description="Last modification time")
+    developer_reply: str | None = Field(None, description="Developer reply if present")
+    developer_reply_time: datetime | None = Field(None, description="Reply time")
+
+
+class ReviewReplyResult(OperationResult):
+    """Result of replying to a review."""
+
+    review_id: str = Field(..., description="Review ID")
+
+
+class SubscriptionProduct(BaseModel):
+    """Subscription product definition."""
+
+    product_id: str = Field(..., description="Subscription product ID")
+    package_name: str = Field(..., description=_DESC_PACKAGE_NAME)
+    status: str | None = Field(None, description="Subscription status")
+    base_plans: list[dict[str, Any]] = Field(
+        default_factory=list, description="Base plan definitions"
+    )
+
+
+class SubscriptionPurchase(BaseModel):
+    """Subscription purchase status."""
+
+    package_name: str = Field(..., description=_DESC_PACKAGE_NAME)
+    subscription_id: str = Field(..., description="Subscription product ID")
+    purchase_token: str = Field(..., description=_DESC_PURCHASE_TOKEN)
+    order_id: str | None = Field(None, description=_DESC_ORDER_ID)
+    start_time: datetime | None = Field(None, description="Subscription start time")
+    expiry_time: datetime | None = Field(None, description="Subscription expiry time")
+    auto_renewing: bool = Field(False, description="Whether auto-renewing")
+    cancel_reason: int | None = Field(None, description="Cancellation reason code")
+    payment_state: int | None = Field(None, description="Payment state code")
+    price_currency: str | None = Field(None, description="Price currency code")
+    price_amount_micros: int | None = Field(None, description="Price amount in micros")
+
+
+class VoidedPurchase(BaseModel):
+    """Voided purchase record."""
+
+    package_name: str = Field(..., description=_DESC_PACKAGE_NAME)
+    purchase_token: str = Field(..., description="Original purchase token")
+    order_id: str | None = Field(None, description=_DESC_ORDER_ID)
+    voided_time: datetime | None = Field(None, description="Time of voiding")
+    voided_reason: int | None = Field(None, description="Reason for voiding")
+    voided_source: int | None = Field(None, description="Source of voiding")
+
+
+class InAppProduct(BaseModel):
+    """In-app product definition."""
+
+    sku: str = Field(..., description="Product SKU")
+    package_name: str = Field(..., description=_DESC_PACKAGE_NAME)
+    product_type: str = Field(..., description="Product type (managed_product or subscription)")
+    status: str | None = Field(None, description="Product status")
+    default_language: str | None = Field(None, description="Default language")
+    title: str | None = Field(None, description="Product title")
+    description: str | None = Field(None, description="Product description")
+    default_price: dict[str, Any] | None = Field(None, description="Default price information")
+
+
+class InAppProductActionResult(OperationResult):
+    """Result of a delete/batch-delete action on in-app products."""
+
+    package_name: str = Field(..., description=_DESC_PACKAGE_NAME)
+    sku: str | None = Field(None, description="Product SKU (None for batch operations)")
+
+
+class Listing(BaseModel):
+    """Store listing for a specific language."""
+
+    language: str = Field(..., description="Language code (e.g., en-US)")
+    title: str | None = Field(None, description="App title")
+    full_description: str | None = Field(None, description="Full description")
+    short_description: str | None = Field(None, description="Short description")
+    video: str | None = Field(None, description="YouTube video URL")
+
+
+class ListingUpdateResult(OperationResult):
+    """Result of updating a store listing."""
+
+    package_name: str = Field(..., description=_DESC_PACKAGE_NAME)
+    language: str = Field(..., description="Language code")
+
+
+class TesterInfo(BaseModel):
+    """Information about testers for a track."""
+
+    track: str = Field(..., description="Track name")
+    google_groups: list[str] = Field(
+        default_factory=list, description="List of Google Group email addresses"
+    )
+
+
+class OrderLineItem(BaseModel):
+    """A single line item within an order."""
+
+    product_id: str | None = Field(None, description="Purchased product ID or in-app SKU")
+    product_title: str | None = Field(None, description="Developer-specified product name")
+
+
+class Order(BaseModel):
+    """Order/transaction information (Android Publisher v3 Order resource).
+
+    Product IDs live in ``line_items`` and the order status is the string enum
+    ``state``; the v3 Order resource has no top-level product ID or numeric
+    purchase state.
+    """
+
+    order_id: str = Field(..., description=_DESC_ORDER_ID)
+    package_name: str = Field(..., description=_DESC_PACKAGE_NAME)
+    state: str | None = Field(
+        None,
+        description="Order state (e.g. PENDING, PROCESSED, CANCELED, PARTIALLY_REFUNDED, REFUNDED)",
+    )
+    line_items: list[OrderLineItem] = Field(
+        default_factory=list, description="Line items making up the order"
+    )
+    product_ids: list[str] = Field(
+        default_factory=list, description="Product IDs across all line items"
+    )
+    purchase_token: str | None = Field(None, description=_DESC_PURCHASE_TOKEN)
+    create_time: datetime | None = Field(None, description="Time the order was created")
+
+
+class ExpansionFile(BaseModel):
+    """APK expansion file information."""
+
+    version_code: int = Field(..., description="Version code")
+    expansion_file_type: str = Field(..., description="Expansion file type (main or patch)")
+    file_size: int | None = Field(None, description="File size in bytes")
+    references_version: int | None = Field(None, description="Referenced version code")
+
+
+class Apk(BaseModel):
+    """An APK belonging to an edit."""
+
+    package_name: str = Field(..., description=_DESC_PACKAGE_NAME)
+    version_code: int = Field(..., description="Version code from the manifest")
+    sha1: str | None = Field(None, description="SHA1 hash of the APK payload")
+    sha256: str | None = Field(None, description="SHA256 hash of the APK payload")
+
+
+class Bundle(BaseModel):
+    """An Android App Bundle (.aab) belonging to an edit."""
+
+    package_name: str = Field(..., description=_DESC_PACKAGE_NAME)
+    version_code: int = Field(..., description="Version code from the base module manifest")
+    sha1: str | None = Field(None, description="SHA1 hash of the upload payload")
+    sha256: str | None = Field(None, description="SHA256 hash of the upload payload")
+
+
+class DeobfuscationFile(BaseModel):
+    """A deobfuscation (mapping/symbol) file uploaded for an APK version."""
+
+    package_name: str = Field(..., description=_DESC_PACKAGE_NAME)
+    version_code: int = Field(..., description="APK version code the file applies to")
+    symbol_type: str | None = Field(
+        None, description="Deobfuscation file type (proguard or nativeCode)"
+    )
+
+
+class AppImage(BaseModel):
+    """A store-listing image belonging to an edit (edits.images resource)."""
+
+    package_name: str = Field(..., description=_DESC_PACKAGE_NAME)
+    language: str = Field(..., description="Language localization code (BCP-47 tag)")
+    image_type: str = Field(
+        ..., description="Image type (e.g. phoneScreenshots, icon, featureGraphic)"
+    )
+    image_id: str | None = Field(None, description="Unique image identifier")
+    url: str | None = Field(None, description="URL where the image is served")
+    sha1: str | None = Field(None, description="SHA1 hash of the image content")
+    sha256: str | None = Field(None, description="SHA256 hash of the image content")
+
+
+class ImageDeleteResult(OperationResult):
+    """Result of deleting one or all store-listing images."""
+
+    package_name: str = Field(..., description=_DESC_PACKAGE_NAME)
+    language: str = Field(..., description="Language localization code (BCP-47 tag)")
+    image_type: str = Field(..., description="Image type the deletion applied to")
+    deleted_count: int = Field(0, description="Number of images deleted")
+
+
+class BatchDeploymentResult(BaseModel):
+    """Result of batch deployment to multiple tracks."""
+
+    success: bool = Field(..., description="Whether all deployments succeeded")
+    results: list[DeploymentResult] = Field(
+        default_factory=list, description="Individual deployment results"
+    )
+    successful_count: int = Field(0, description="Number of successful deployments")
+    failed_count: int = Field(0, description="Number of failed deployments")
+    message: str = Field(..., description="Overall status message")
+
+
+class ProductPurchase(BaseModel):
+    """Status of an in-app product purchase."""
+
+    package_name: str = Field(..., description=_DESC_PACKAGE_NAME)
+    product_id: str = Field(..., description="In-app product SKU")
+    purchase_token: str = Field(..., description=_DESC_PURCHASE_TOKEN)
+    order_id: str | None = Field(None, description=_DESC_ORDER_ID)
+    purchase_state: int | None = Field(
+        None, description="Purchase state (0=purchased, 1=canceled, 2=pending)"
+    )
+    consumption_state: int | None = Field(
+        None, description="Consumption state (0=yet to be consumed, 1=consumed)"
+    )
+    acknowledgement_state: int | None = Field(
+        None, description="Acknowledgement state (0=not acknowledged, 1=acknowledged)"
+    )
+    purchase_time: datetime | None = Field(None, description="Purchase time")
+    purchase_type: int | None = Field(
+        None, description="Purchase type (0=test, 1=promo, 2=rewarded)"
+    )
+    quantity: int | None = Field(None, description="Quantity purchased")
+    region_code: str | None = Field(None, description="Billing region code")
+    developer_payload: str | None = Field(None, description="Developer-supplied payload")
+
+
+class ProductPurchaseActionResult(OperationResult):
+    """Result of an acknowledge/consume action on an in-app product purchase."""
+
+    package_name: str = Field(..., description=_DESC_PACKAGE_NAME)
+    product_id: str = Field(..., description="In-app product SKU")
+    purchase_token: str = Field(..., description=_DESC_PURCHASE_TOKEN)
+    action: str = Field(..., description="Action performed (acknowledge or consume)")
+
+
+class ValidationResult(BaseModel):
+    """Validation result details."""
+
+    field: str = Field(..., description="Field that failed validation")
+    message: str = Field(..., description="Error message")
+    value: Any | None = Field(None, description="Invalid value")
+
+
+class OrderRefundResult(OperationResult):
+    """Result of refunding an order."""
+
+    package_name: str = Field(..., description=_DESC_PACKAGE_NAME)
+    order_id: str = Field(..., description=_DESC_ORDER_ID)
+    revoked: bool = Field(..., description="Whether the entitlement was also revoked")
+
+
+class SubscriptionActionResult(OperationResult):
+    """Result of a cancel/defer/revoke action on a subscription purchase."""
+
+    package_name: str = Field(..., description=_DESC_PACKAGE_NAME)
+    purchase_token: str = Field(..., description=_DESC_PURCHASE_TOKEN)
+    action: str = Field(..., description="Action performed (cancel, defer, or revoke)")
+    details: dict[str, Any] | None = Field(
+        None, description="Extra result data (e.g. defer expiry)"
+    )
+
+
+class SubscriptionCatalogResult(OperationResult):
+    """Result of a delete action on a subscription catalog product."""
+
+    package_name: str = Field(..., description=_DESC_PACKAGE_NAME)
+    product_id: str | None = Field(
+        None, description="Subscription product ID (None for batch operations)"
+    )
+
+
+class SubscriptionOffer(BaseModel):
+    """Subscription offer definition (basePlans.offers resource)."""
+
+    package_name: str = Field(..., description=_DESC_PACKAGE_NAME)
+    product_id: str = Field(..., description="Parent subscription product ID")
+    base_plan_id: str = Field(..., description="Parent base plan ID")
+    offer_id: str = Field(..., description="Subscription offer ID")
+    state: str | None = Field(None, description="Offer state (e.g. DRAFT, ACTIVE, INACTIVE)")
+    offer_tags: list[str] = Field(default_factory=list, description="Offer tag strings")
+    phases: list[dict[str, Any]] = Field(
+        default_factory=list, description="Offer phase definitions"
+    )
+    regions_version: str | None = Field(None, description="Regions catalog version")
+
+
+class OneTimeProduct(BaseModel):
+    """One-time product definition (monetization.oneTimeProducts resource)."""
+
+    product_id: str = Field(..., description="One-time product ID")
+    package_name: str = Field(..., description=_DESC_PACKAGE_NAME)
+    listings: list[dict[str, Any]] = Field(
+        default_factory=list, description="Store listing definitions"
+    )
+    purchase_options: list[dict[str, Any]] = Field(
+        default_factory=list, description="Purchase option definitions"
+    )
+    offer_tags: list[dict[str, Any]] = Field(
+        default_factory=list, description="Offer tag definitions"
+    )
+    restricted_payment_countries: dict[str, Any] | None = Field(
+        None, description="Restricted payment countries configuration"
+    )
+
+
+class OneTimeProductActionResult(OperationResult):
+    """Result of a delete/batch-delete action on a one-time product catalog resource."""
+
+    package_name: str = Field(..., description=_DESC_PACKAGE_NAME)
+    product_id: str | None = Field(
+        None, description="One-time product ID (None for batch operations)"
+    )
+
+
+class OneTimeProductOffer(BaseModel):
+    """One-time product offer definition (purchaseOptions.offers resource)."""
+
+    package_name: str = Field(..., description=_DESC_PACKAGE_NAME)
+    product_id: str = Field(..., description="Parent one-time product ID")
+    purchase_option_id: str = Field(..., description="Parent purchase option ID")
+    offer_id: str = Field(..., description="One-time product offer ID")
+    state: str | None = Field(None, description="Offer state (e.g. DRAFT, ACTIVE, INACTIVE)")
+    offer_tags: list[str] = Field(default_factory=list, description="Offer tag strings")
+    regions_version: str | None = Field(None, description="Regions catalog version")
+
+
+class ProductPurchaseV2(BaseModel):
+    """Status of an in-app product purchase (Purchases.productsv2)."""
+
+    package_name: str = Field(..., description=_DESC_PACKAGE_NAME)
+    purchase_token: str = Field(..., description=_DESC_PURCHASE_TOKEN)
+    order_id: str | None = Field(None, description=_DESC_ORDER_ID)
+    acknowledgement_state: str | None = Field(None, description="Acknowledgement state (enum)")
+    purchase_completion_time: str | None = Field(
+        None, description="Purchase completion time (RFC3339)"
+    )
+    region_code: str | None = Field(None, description="Billing region code")
+    product_line_items: list[dict[str, Any]] = Field(
+        default_factory=list, description="Purchased product line items"
+    )
+    obfuscated_external_account_id: str | None = Field(
+        None, description="Obfuscated external account ID"
+    )
+    obfuscated_external_profile_id: str | None = Field(
+        None, description="Obfuscated external profile ID"
+    )
+    test_purchase: bool = Field(False, description="Whether this is a test purchase")
+
+
+class ExternalTransaction(BaseModel):
+    """External (alternative billing) transaction (externaltransactions resource)."""
+
+    package_name: str = Field(..., description=_DESC_PACKAGE_NAME)
+    external_transaction_id: str = Field(..., description="External transaction ID")
+    transaction_state: str | None = Field(None, description="Current transaction state")
+    create_time: str | None = Field(None, description="Time the transaction was created (RFC3339)")
+    current_pre_tax_amount: dict[str, Any] | None = Field(
+        None, description="Current transaction amount before tax (Price)"
+    )
+    original_pre_tax_amount: dict[str, Any] | None = Field(
+        None, description="Original transaction amount before tax (Price)"
+    )
+    test_purchase: bool = Field(False, description="Whether this is a test purchase")
+
+
+class DeviceTierConfig(BaseModel):
+    """Device tier config (applications.deviceTierConfigs resource)."""
+
+    package_name: str = Field(..., description=_DESC_PACKAGE_NAME)
+    device_tier_config_id: str | None = Field(None, description="Device tier config ID")
+    device_groups: list[dict[str, Any]] = Field(
+        default_factory=list, description="Device group definitions"
+    )
+    device_tier_set: dict[str, Any] | None = Field(
+        None, description="Set of device tiers for the app"
+    )
+    user_country_sets: list[dict[str, Any]] = Field(
+        default_factory=list, description="User country set definitions"
+    )
+
+
+class User(BaseModel):
+    """A Play Console user with account access (users resource)."""
+
+    developer_id: str = Field(..., description="Developer account ID")
+    email: str | None = Field(None, description="User's email address")
+    access_state: str | None = Field(
+        None, description="Current access state (e.g. INVITED, ACCESS_GRANTED)"
+    )
+    expiration_time: str | None = Field(
+        None, description="Time the user's access expires (RFC3339)"
+    )
+    developer_account_permissions: list[str] = Field(
+        default_factory=list, description="Account-wide permissions granted to the user"
+    )
+
+
+class Grant(BaseModel):
+    """An app-level access grant for a user (grants resource)."""
+
+    developer_id: str = Field(..., description="Developer account ID")
+    email: str = Field(..., description="Email of the user the grant belongs to")
+    package_name: str | None = Field(None, description="App package name the grant applies to")
+    app_level_permissions: list[str] = Field(
+        default_factory=list, description="App-level permissions granted to the user"
+    )
+
+
+class AccessResult(OperationResult):
+    """Result of a user/grant write that returns an empty response (delete)."""
+
+
+class DataSafetyResult(OperationResult):
+    """Result of updating an app's data safety labels (applications.dataSafety)."""
+
+    package_name: str = Field(..., description=_DESC_PACKAGE_NAME)
+
+
+class AppRecovery(BaseModel):
+    """App recovery action (applications.appRecoveries resource)."""
+
+    package_name: str = Field(..., description=_DESC_PACKAGE_NAME)
+    app_recovery_id: str | None = Field(None, description="App recovery action ID")
+    status: str | None = Field(None, description="Recovery action status")
+    targeting: dict[str, Any] | None = Field(
+        None, description="Targeting criteria for the recovery action"
+    )
+    create_time: str | None = Field(None, description="Time the recovery action was created")
+
+
+class AppRecoveryResult(OperationResult):
+    """Result of a deploy/cancel/add-targeting action on an app recovery action."""
+
+    package_name: str = Field(..., description=_DESC_PACKAGE_NAME)
+    app_recovery_id: str | None = Field(None, description="App recovery action ID")
+
+
+class GeneratedApksDownload(BaseModel):
+    """A single downloadable generated APK (generatedapks resource)."""
+
+    package_name: str = Field(..., description=_DESC_PACKAGE_NAME)
+    version_code: int = Field(..., description="Bundle version code the APK was generated from")
+    download_id: str = Field(..., description="Download ID identifying the generated APK")
+    apk_type: str = Field(
+        ...,
+        description=(
+            "Kind of generated APK: split, standalone, universal, asset_pack_slice, or recovery"
+        ),
+    )
+
+
+class SystemApkVariant(BaseModel):
+    """A system APK variant (systemapks.variants resource)."""
+
+    package_name: str = Field(..., description=_DESC_PACKAGE_NAME)
+    version_code: int = Field(..., description="Version code of the App Bundle")
+    variant_id: int | None = Field(None, description="ID of the system APK variant")
+    device_spec: dict[str, Any] | None = Field(
+        None, description="Device spec used to generate the APK"
+    )
+    options: dict[str, Any] | None = Field(None, description="Options applied to the generated APK")
+
+
+class DownloadResult(OperationResult):
+    """Result of downloading a file to a local path."""
+
+    destination_path: str = Field(..., description="Local path the file was written to")
+
+
+class InternalAppSharingArtifact(BaseModel):
+    """An uploaded internal app sharing artifact (internalappsharingartifacts)."""
+
+    package_name: str = Field(..., description=_DESC_PACKAGE_NAME)
+    download_url: str | None = Field(None, description="Download URL for the uploaded artifact")
+    certificate_fingerprint: str | None = Field(
+        None, description="SHA-256 fingerprint of the signing certificate"
+    )
+    sha256: str | None = Field(None, description="SHA-256 hash of the artifact")

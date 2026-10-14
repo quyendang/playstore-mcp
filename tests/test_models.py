@@ -1,0 +1,239 @@
+"""Tests for Pydantic models."""
+
+from __future__ import annotations
+
+from play_store_mcp.models import (
+    AppDetails,
+    DeploymentResult,
+    Release,
+    Review,
+    SubscriptionProduct,
+)
+
+
+class TestRelease:
+    """Test Release model."""
+
+    def test_release_minimal(self) -> None:
+        """Test creating a release with minimal fields."""
+        release = Release(
+            package_name="com.example.app",
+            track="production",
+            status="completed",
+        )
+
+        assert release.package_name == "com.example.app"
+        assert release.version_codes == []
+        assert release.rollout_percentage == 100.0
+
+    def test_release_full(self) -> None:
+        """Test creating a release with all fields."""
+        release = Release(
+            package_name="com.example.app",
+            track="beta",
+            status="inProgress",
+            version_codes=[100, 101],
+            version_name="1.0.0",
+            rollout_percentage=50.0,
+            release_notes={"en-US": "Test notes"},
+        )
+
+        assert release.version_codes == [100, 101]
+        assert release.rollout_percentage == 50.0
+        assert release.release_notes["en-US"] == "Test notes"
+
+
+class TestDeploymentResult:
+    """Test DeploymentResult model."""
+
+    def test_successful_deployment(self) -> None:
+        """Test successful deployment result."""
+        result = DeploymentResult(
+            success=True,
+            edit_id="edit-123",
+            package_name="com.example.app",
+            track="production",
+            version_code=100,
+            message="Deployed successfully",
+        )
+
+        assert result.success is True
+        assert result.error is None
+
+    def test_failed_deployment(self) -> None:
+        """Test failed deployment result."""
+        result = DeploymentResult(
+            success=False,
+            package_name="com.example.app",
+            track="production",
+            message="Deployment failed",
+            error="Permission denied",
+        )
+
+        assert result.success is False
+        assert result.edit_id is None
+        assert result.error == "Permission denied"
+
+
+class TestReview:
+    """Test Review model."""
+
+    def test_review_required_fields(self) -> None:
+        """Test review with required fields only."""
+        review = Review(
+            review_id="review-123",
+            author_name="Test User",
+            star_rating=5,
+            comment="Great app!",
+            language="en",
+        )
+
+        assert review.star_rating == 5
+        assert review.developer_reply is None
+
+    def test_review_with_reply(self) -> None:
+        """Test review with developer reply."""
+        review = Review(
+            review_id="review-123",
+            author_name="Test User",
+            star_rating=3,
+            comment="Could be better",
+            language="en",
+            developer_reply="Thanks for the feedback!",
+        )
+
+        assert review.developer_reply == "Thanks for the feedback!"
+
+
+class TestAppDetails:
+    """Test AppDetails model."""
+
+    def test_app_details(self) -> None:
+        """Test app details model."""
+        details = AppDetails(
+            package_name="com.example.app",
+            title="My App",
+            short_description="A great app",
+            full_description="This is a great app that does amazing things.",
+            default_language="en-US",
+            developer_email="dev@example.com",
+        )
+
+        assert details.title == "My App"
+        assert details.developer_website is None
+
+
+class TestSubscriptionProduct:
+    """Test SubscriptionProduct model."""
+
+    def test_subscription_product(self) -> None:
+        """Test subscription product model."""
+        product = SubscriptionProduct(
+            product_id="premium_monthly",
+            package_name="com.example.app",
+            base_plans=[
+                {"basePlanId": "monthly", "state": "ACTIVE"},
+            ],
+        )
+
+        assert product.product_id == "premium_monthly"
+        assert len(product.base_plans) == 1
+
+
+class TestInAppProduct:
+    """Test InAppProduct model."""
+
+    def test_in_app_product(self) -> None:
+        """Test in-app product model."""
+        from play_store_mcp.models import InAppProduct
+
+        product = InAppProduct(
+            sku="premium_upgrade",
+            package_name="com.example.app",
+            product_type="managedProduct",
+            status="active",
+            default_language="en-US",
+            title="Premium Upgrade",
+            description="Unlock all features",
+            default_price={"currency": "USD", "priceMicros": "4990000"},
+        )
+
+        assert product.sku == "premium_upgrade"
+        assert product.product_type == "managedProduct"
+        assert product.default_price is not None
+
+
+class TestListing:
+    """Test Listing model."""
+
+    def test_listing(self) -> None:
+        """Test listing model."""
+        from play_store_mcp.models import Listing
+
+        listing = Listing(
+            language="en-US",
+            title="My Awesome App",
+            full_description="This is a great app",
+            short_description="A great app",
+            video="https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+        )
+
+        assert listing.language == "en-US"
+        assert listing.title == "My Awesome App"
+
+
+class TestTesterInfo:
+    """Test TesterInfo model."""
+
+    def test_tester_info(self) -> None:
+        """Test tester info model."""
+        from play_store_mcp.models import TesterInfo
+
+        testers = TesterInfo(
+            track="beta",
+            google_groups=["tester1@example.com", "tester2@example.com"],
+        )
+
+        assert testers.track == "beta"
+        assert len(testers.google_groups) == 2
+
+
+class TestOrder:
+    """Test Order model."""
+
+    def test_order(self) -> None:
+        """Test order model."""
+        from play_store_mcp.models import Order, OrderLineItem
+
+        order = Order(
+            order_id="GPA.1234-5678-9012-34567",
+            package_name="com.example.app",
+            state="PROCESSED",
+            line_items=[OrderLineItem(product_id="premium_upgrade", product_title="Premium")],
+            product_ids=["premium_upgrade"],
+            purchase_token="token123",
+        )
+
+        assert order.order_id == "GPA.1234-5678-9012-34567"
+        assert order.state == "PROCESSED"
+        assert order.product_ids == ["premium_upgrade"]
+        assert order.line_items[0].product_title == "Premium"
+
+
+class TestExpansionFile:
+    """Test ExpansionFile model."""
+
+    def test_expansion_file(self) -> None:
+        """Test expansion file model."""
+        from play_store_mcp.models import ExpansionFile
+
+        expansion = ExpansionFile(
+            version_code=100,
+            expansion_file_type="main",
+            file_size=104857600,
+            references_version=100,
+        )
+
+        assert expansion.version_code == 100
+        assert expansion.expansion_file_type == "main"
+        assert expansion.file_size == 104857600
